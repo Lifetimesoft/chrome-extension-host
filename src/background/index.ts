@@ -216,7 +216,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // ── Navigation: open dashboard ──
   if (message.type === "open_dashboard") {
-    chrome.tabs.create({ url: chrome.runtime.getURL("dist/dashboard/index.html") })
+    chrome.tabs.create({ url: chrome.runtime.getURL("dashboard/index.html") })
       .then(() => sendResponse({ success: true }))
       .catch(() => sendResponse({ success: false }))
     return true
@@ -225,7 +225,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // ── Navigation: open logs ──
   if (message.type === "open_logs") {
     const { agent } = message as { agent?: string }
-    const url = chrome.runtime.getURL("dist/logs/index.html") + (agent ? `?agent=${encodeURIComponent(agent)}` : "")
+    const url = chrome.runtime.getURL("logs/index.html") + (agent ? `?agent=${encodeURIComponent(agent)}` : "")
     chrome.tabs.create({ url })
       .then(() => sendResponse({ success: true }))
       .catch(() => sendResponse({ success: false }))
