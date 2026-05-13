@@ -17,6 +17,29 @@ const AUTH_URL = "https://app.lifetimesoft.com/ex-api"
 const POLL_INTERVAL_MS = 3_000
 const POLL_TIMEOUT_MS  = 5 * 60 * 1_000
 
+// ─── Login state persisted to storage ────────────────────────────────────────
+// SW can be terminated during polling — persist device_code so we can resume
+
+const LOGIN_STATE_KEY = "lts_login_pending"
+
+interface LoginState {
+  device_code: string
+  deadline: number  // unix ms
+}
+
+async function saveLoginState(state: LoginState): Promise<void> {
+  await chrome.storage.local.set({ [LOGIN_STATE_KEY]: state })
+}
+
+async function getLoginState(): Promise<LoginState | null> {
+  const stored = await chrome.storage.local.get(LOGIN_STATE_KEY)
+  return (stored[LOGIN_STATE_KEY] as LoginState | undefined) ?? null
+}
+
+async function clearLoginState(): Promise<void> {
+  await chrome.storage.local.remove(LOGIN_STATE_KEY)
+}
+
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
 
 function isTokenExpired(token: string): boolean {
@@ -61,22 +84,48 @@ export async function login(): Promise<void> {
   }
 
   const { device_code, login_url } = init
+  const deadline = Date.now() + POLL_TIMEOUT_MS
 
-  // 2. Open login page in a new tab
+  // 2. Persist login state so SW can resume polling after being terminated
+  await saveLoginState({ device_code, deadline })
+
+  // 3. Open login page in a new tab
   await chrome.tabs.create({ url: login_url })
   bgLog.info("Login page opened — waiting for user to authenticate...")
 
-  // 3. Poll until completed, expired, or timed out
-  const deadline = Date.now() + POLL_TIMEOUT_MS
+  // 4. Poll — use chrome.alarms to keep SW alive between polls
+  await pollForToken(device_code, deadline, signal)
+}
 
+async function pollForToken(
+  device_code: string,
+  deadline: number,
+  signal: AbortSignal
+): Promise<void> {
   while (Date.now() < deadline) {
-    if (signal.aborted) throw new Error("Login cancelled")
+    if (signal.aborted) {
+      await clearLoginState()
+      throw new Error("Login cancelled")
+    }
 
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
-    if (signal.aborted) throw new Error("Login cancelled")
+    // Use chrome.alarms to schedule next poll — keeps SW alive
+    await new Promise<void>(resolve => {
+      chrome.alarms.create("lts_login_poll", { delayInMinutes: POLL_INTERVAL_MS / 60_000 })
+      chrome.alarms.onAlarm.addListener(function handler(alarm) {
+        if (alarm.name === "lts_login_poll") {
+          chrome.alarms.onAlarm.removeListener(handler)
+          resolve()
+        }
+      })
+    })
+
+    if (signal.aborted) {
+      await clearLoginState()
+      throw new Error("Login cancelled")
+    }
 
     const pollRes = await fetch(`${AUTH_URL}/cli-login/poll?device_code=${encodeURIComponent(device_code)}`)
-    if (!pollRes.ok) continue // transient error — keep polling
+    if (!pollRes.ok) continue
 
     const poll = await pollRes.json() as {
       status: "pending" | "completed" | "expired"
@@ -85,19 +134,43 @@ export async function login(): Promise<void> {
     }
 
     if (poll.status === "completed" && poll.access_token) {
-      // 4. Save tokens
       await saveTokens(poll.access_token, poll.refresh_token)
+      await clearLoginState()
       bgLog.info("Login successful — tokens saved")
+      // Notify popup
+      chrome.runtime.sendMessage({ type: "login_complete" }).catch(() => {})
       return
     }
 
     if (poll.status === "expired") {
+      await clearLoginState()
       throw new Error("Login session expired — please try again")
     }
-    // status === "pending" → keep polling
   }
 
+  await clearLoginState()
   throw new Error("Login timed out after 5 minutes")
+}
+
+/**
+ * Resume polling if SW was terminated during a login flow.
+ * Call this from bootstrap() on every SW wake-up.
+ */
+export async function resumeLoginIfPending(): Promise<void> {
+  const state = await getLoginState()
+  if (!state) return
+  if (Date.now() >= state.deadline) {
+    await clearLoginState()
+    bgLog.warn("Pending login expired — cleared")
+    return
+  }
+
+  bgLog.info("Resuming pending login poll...")
+  const abort = new AbortController()
+  _loginAbort = abort
+  pollForToken(state.device_code, state.deadline, abort.signal).catch(e => {
+    bgLog.error("Resumed login failed:", e instanceof Error ? e.message : String(e))
+  })
 }
 
 export function cancelLogin(): void {

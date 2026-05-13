@@ -79,27 +79,22 @@ async function run(): Promise<void> {
   if (status.loggedIn) {
     showMainView(status)
   } else {
-    showLoginView()
+    // Check if a login is already in progress (SW was polling while popup was closed)
+    const pending = await chrome.storage.local.get("lts_login_pending")
+    const loginState = pending["lts_login_pending"] as { deadline: number } | undefined
+    const isPolling = !!loginState && loginState.deadline > Date.now()
+    showLoginView(isPolling)
   }
 
   // ── Login button ──
-  el<HTMLButtonElement>("login-btn").addEventListener("click", async () => {
+  el<HTMLButtonElement>("login-btn").addEventListener("click", () => {
     showLoginView(true)
     setStatus("")
 
-    try {
-      await sendMsg<GenericResponse>({ type: "auth_login" })
-      const newStatus = await sendMsg<StatusResponse>({ type: "get_status" })
-      if (newStatus.loggedIn) {
-        showMainView(newStatus)
-      } else {
-        showLoginView()
-        setStatus("Login failed — please try again", true)
-      }
-    } catch (e) {
-      showLoginView()
-      setStatus(e instanceof Error ? e.message : "Login failed", true)
-    }
+    // Fire-and-forget — login() polls for up to 5 min, popup can't await that long
+    // (Chrome message channel times out ~30s)
+    // Result comes back via "login_complete" message below
+    chrome.runtime.sendMessage({ type: "auth_login" }).catch(() => {})
   })
 
   // ── Cancel polling ──
@@ -144,9 +139,18 @@ async function run(): Promise<void> {
     }
   })
 
-  // ── Listen for login_complete from background ──
+  // ── Listen for login_complete from background (popup still open) ──
   chrome.runtime.onMessage.addListener((message) => {
     if (typeof message === "object" && message !== null && message.type === "login_complete") {
+      sendMsg<StatusResponse>({ type: "get_status" }).then(showMainView).catch(() => {})
+    }
+  })
+
+  // ── Fallback: watch storage for token being saved ──
+  // Handles the case where popup was closed/hidden during polling and
+  // misses the login_complete message from the background service worker.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes["lts_access_token"]?.newValue) {
       sendMsg<StatusResponse>({ type: "get_status" }).then(showMainView).catch(() => {})
     }
   })

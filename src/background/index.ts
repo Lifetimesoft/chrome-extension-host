@@ -9,7 +9,7 @@
  */
 
 import { bgLog } from "../utils/logger"
-import { login, logout, cancelLogin, isLoggedIn } from "../services/auth.service"
+import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
 import { listInstalledAgents, installAgent, uninstallAgent } from "../services/agent.service"
 import { startAgent, stopAgent, isAgentRunning } from "../services/runtime.service"
 
@@ -17,6 +17,9 @@ import { startAgent, stopAgent, isAgentRunning } from "../services/runtime.servi
 
 async function bootstrap(): Promise<void> {
   bgLog.info("Host bootstrapping...")
+
+  // Resume login polling if SW was terminated during a login flow
+  await resumeLoginIfPending()
 
   const loggedIn = await isLoggedIn()
   if (!loggedIn) {
@@ -52,11 +55,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // ── Auth: login ──
   if (message.type === "auth_login") {
     login()
-      .then(() => {
-        // Notify popup that login is done
-        chrome.runtime.sendMessage({ type: "login_complete" }).catch(() => { /* popup may be closed */ })
-        sendResponse({ success: true })
-      })
+      .then(() => sendResponse({ success: true }))
       .catch((e: unknown) => sendResponse({
         success: false,
         error: e instanceof Error ? e.message : String(e),

@@ -179,6 +179,10 @@ function setNotification(text: string, isError: boolean): void {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run(): Promise<void> {
+  // Show extension version in header
+  const manifest = chrome.runtime.getManifest()
+  el<HTMLSpanElement>("ext-version").textContent = `(v${manifest.version})`
+
   await refreshStatus()
 
   // ── Disconnect all ──

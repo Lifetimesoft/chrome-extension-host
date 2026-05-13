@@ -37,8 +37,8 @@
 
     /* ── Top bar ── */
     .topbar {
-      background: #fff;
-      border-bottom: 1px solid var(--border);
+      background: linear-gradient(to bottom, #f0fdf4, #fff);
+      border-bottom: 1px solid #dcfce7;
       padding: 0 24px;
       height: 56px;
       display: flex;
@@ -48,14 +48,13 @@
     }
     .topbar-logo {
       width: 32px; height: 32px;
-      background: var(--green);
+      background: #dfffeb;
       border-radius: 8px;
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
     }
-    .topbar-logo svg { color: #fff; }
     .topbar-title { font-size: 16px; font-weight: 700; color: #14532d; }
-    .topbar-sub   { font-size: 12px; color: #4ade80; }
+    .topbar-sub   { font-size: 12px; color: #31b361; margin-top: 1px; }
     .topbar-spacer { flex: 1; }
     .topbar-btn {
       display: flex; align-items: center; gap: 6px;
@@ -237,14 +236,13 @@
   <!-- ── Top bar ── -->
   <div class="topbar">
     <div class="topbar-logo">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-      </svg>
+      <img src="https://static.lifetimesoft.com/img/favicon.png"
+           width="22" height="22" alt="logo"
+           style="border-radius:4px; display:block;" />
     </div>
     <div>
-      <div class="topbar-title">Agent Host</div>
-      <div class="topbar-sub">LifetimeSoft Platform</div>
+      <div class="topbar-title">Lifetimesoft Agent Host</div>
+      <div class="topbar-sub">AI Agent Platform <span id="ext-version"></span></div>
     </div>
     <div class="topbar-spacer"></div>
     <button id="refresh-btn" class="topbar-btn">
