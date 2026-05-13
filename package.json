@@ -1,0 +1,18 @@
+{
+  "name": "chrome-extension-host",
+  "version": "0.0.1",
+  "description": "Chrome Extension MV3 host application for running multiple AI agents built with @lifetimesoft/agent-sdk",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "dev": "tsc --noEmit --watch"
+  },
+  "dependencies": {
+    "@lifetimesoft/agent-sdk": "0.0.21"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.42",
+    "esbuild": "0.25.4",
+    "typescript": "5.9.3"
+  },
+  "license": "MIT"
+}

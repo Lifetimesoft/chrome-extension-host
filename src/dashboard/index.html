@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Host Dashboard — LifetimeSoft</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:      #15803d;
+      --green-light: #16a34a;
+      --green-bg:   #f0fdf4;
+      --green-border: #dcfce7;
+      --green-dim:  #bbf7d0;
+      --text:       #111827;
+      --text-muted: #6b7280;
+      --border:     #e5e7eb;
+      --bg:         #f9fafb;
+      --card-bg:    #fff;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    /* ── Layout ── */
+    .layout {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      background: #fff;
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .topbar-logo {
+      width: 32px; height: 32px;
+      background: var(--green);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .topbar-logo svg { color: #fff; }
+    .topbar-title { font-size: 16px; font-weight: 700; color: #14532d; }
+    .topbar-sub   { font-size: 12px; color: #4ade80; }
+    .topbar-spacer { flex: 1; }
+    .topbar-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #fff;
+      font-size: 12px; color: var(--text-muted);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .topbar-btn:hover { background: var(--green-bg); color: var(--green); border-color: var(--green-dim); }
+
+    /* ── Main content ── */
+    .main {
+      flex: 1;
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 28px 24px;
+    }
+
+    /* ── Section ── */
+    .section { margin-bottom: 32px; }
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .section-title {
+      font-size: 16px; font-weight: 700; color: var(--text);
+    }
+    .section-sub {
+      font-size: 12px; color: var(--text-muted); margin-top: 2px;
+    }
+
+    /* ── Notification ── */
+    .notification {
+      display: none;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .notification.info  { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
+    .notification.error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+
+    /* ── Agent cards ── */
+    #agents-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .agent-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      transition: border-color 0.15s;
+    }
+    .agent-card:hover { border-color: var(--green-dim); }
+
+    .agent-card-header {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .agent-info { flex: 1; min-width: 0; }
+    .agent-name {
+      font-size: 14px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .agent-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .agent-run-id {
+      font-size: 11px; color: var(--text-muted);
+      margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .agent-run-id code {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 10px; color: #374151;
+    }
+
+    .agent-actions {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-flex; align-items: center;
+      padding: 3px 9px;
+      border-radius: 20px;
+      font-size: 11px; font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-running { background: #dcfce7; color: #15803d; }
+    .badge-stopped { background: #f3f4f6; color: #6b7280; }
+    .badge-error   { background: #fef2f2; color: #dc2626; }
+
+    /* ── Action buttons ── */
+    .btn-action {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 12px; font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 0.15s;
+    }
+    .btn-start {
+      background: var(--green-bg); color: var(--green);
+      border-color: var(--green-dim);
+    }
+    .btn-start:hover { background: var(--green-dim); }
+    .btn-stop {
+      background: #fff7ed; color: #c2410c;
+      border-color: #fed7aa;
+    }
+    .btn-stop:hover { background: #ffedd5; }
+    .btn-logs {
+      background: #f3f4f6; color: #374151;
+      border-color: var(--border);
+      padding: 5px 8px;
+    }
+    .btn-logs:hover { background: #e5e7eb; }
+    .btn-uninstall {
+      background: #fff; color: #9ca3af;
+      border-color: var(--border);
+      padding: 5px 8px;
+    }
+    .btn-uninstall:hover { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+
+    /* ── Empty state ── */
+    #agents-empty {
+      display: none;
+      flex-direction: column; align-items: center; justify-content: center;
+      padding: 48px 24px;
+      background: var(--card-bg);
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      color: var(--text-muted);
+      gap: 8px;
+      text-align: center;
+    }
+    #agents-empty svg { opacity: 0.3; }
+    #agents-empty p { font-size: 14px; }
+    #agents-empty small { font-size: 12px; opacity: 0.7; }
+
+    /* ── Settings card ── */
+    .settings-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-row-label { font-size: 13px; font-weight: 500; color: var(--text); }
+    .settings-row-desc  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    .btn-settings {
+      padding: 6px 14px;
+      border-radius: 7px;
+      font-size: 12px; font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: #fff; color: var(--text);
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    .btn-settings:hover { background: var(--green-bg); color: var(--green); border-color: var(--green-dim); }
+    .btn-settings-danger {
+      border-color: #fecaca; color: #dc2626; background: #fff;
+    }
+    .btn-settings-danger:hover { background: #fef2f2; }
+  </style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ── Top bar ── -->
+  <div class="topbar">
+    <div class="topbar-logo">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+      </svg>
+    </div>
+    <div>
+      <div class="topbar-title">Agent Host</div>
+      <div class="topbar-sub">LifetimeSoft Platform</div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <button id="refresh-btn" class="topbar-btn">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"/>
+        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+
+  <!-- ── Main ── -->
+  <div class="main">
+
+    <!-- Notification -->
+    <div id="notification" class="notification"></div>
+
+    <!-- ── Installed Agents ── -->
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Installed Agents</div>
+          <div class="section-sub">Manage and monitor your running agents</div>
+        </div>
+      </div>
+
+      <div id="agents-list"></div>
+
+      <div id="agents-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+        <p>No agents installed</p>
+        <small>Install agents from the LifetimeSoft registry to get started</small>
+      </div>
+    </div>
+
+    <!-- ── Settings ── -->
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Settings</div>
+          <div class="section-sub">Connection and account management</div>
+        </div>
+      </div>
+
+      <div class="settings-card">
+
+        <!-- Logged in settings -->
+        <div id="settings-logged-in">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-label">Disconnect all agents</div>
+              <div class="settings-row-desc">Stop all running agents without logging out</div>
+            </div>
+            <button id="disconnect-all-btn" class="btn-settings">⏸ Disconnect all</button>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-label">Reconnect agents</div>
+              <div class="settings-row-desc">Restart all previously running agents</div>
+            </div>
+            <button id="reconnect-all-btn" class="btn-settings">↺ Reconnect all</button>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-label">Sign out</div>
+              <div class="settings-row-desc">Log out and stop all agents</div>
+            </div>
+            <button id="logout-btn" class="btn-settings btn-settings-danger">Sign out</button>
+          </div>
+        </div>
+
+        <!-- Logged out settings -->
+        <div id="settings-logged-out" style="display:none">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-label">Not signed in</div>
+              <div class="settings-row-desc">Open the extension popup to sign in</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script type="module" src="index.js"></script>
+</body>
+</html>

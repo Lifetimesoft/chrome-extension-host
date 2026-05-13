@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Logs — LifetimeSoft Host</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:     #16a34a;
+      --green-dim: #15803d;
+      --bg:        #0f1117;
+      --bg2:       #161b22;
+      --bg3:       #1c2128;
+      --border:    rgba(255,255,255,0.08);
+      --text:      #e6edf3;
+      --muted:     #7d8590;
+    }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Toolbar ── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .toolbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-right: 4px;
+    }
+    .toolbar-logo {
+      width: 24px; height: 24px;
+      background: var(--green-dim);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .toolbar-logo svg { color: #fff; }
+    .toolbar-title { font-size: 13px; font-weight: 700; color: #fff; }
+
+    .toolbar-sep { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
+
+    .search-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 160px;
+      max-width: 280px;
+    }
+    .search-wrap svg {
+      position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+      color: var(--muted); pointer-events: none;
+    }
+    .search-wrap input {
+      width: 100%;
+      padding: 5px 10px 5px 28px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+    }
+    .search-wrap input:focus { border-color: var(--green); }
+    .search-wrap input::placeholder { color: var(--muted); }
+
+    select {
+      padding: 5px 8px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+    }
+    select:focus { border-color: var(--green); }
+
+    .btn-clear {
+      padding: 5px 12px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .btn-clear:hover { color: #f87171; border-color: #f87171; }
+
+    .count-badge {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+      margin-left: auto;
+    }
+    .count-badge span { color: var(--green); font-weight: 600; }
+
+    /* ── Log area ── */
+    #log-container {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: var(--bg);
+    }
+
+    /* scrollbar */
+    #log-container::-webkit-scrollbar { width: 6px; }
+    #log-container::-webkit-scrollbar-track { background: transparent; }
+    #log-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .log-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 4px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: 11.5px;
+      line-height: 1.6;
+    }
+    .log-row:hover { background: rgba(255,255,255,0.03); }
+
+    .log-ts   { color: #484f58; flex-shrink: 0; width: 90px; user-select: none; }
+    .log-badge {
+      flex-shrink: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      width: 44px;
+    }
+    .badge-info  { background: #0d2818; color: #4ade80; }
+    .badge-warn  { background: #2d1f00; color: #fbbf24; }
+    .badge-error { background: #2d0a0a; color: #f87171; }
+    .badge-debug { background: #1c2128; color: #7d8590; }
+
+    .log-tag  { color: #4ade80; flex-shrink: 0; }
+    .log-msg  { word-break: break-all; }
+    .msg-info  { color: #cdd9e5; }
+    .msg-warn  { color: #fbbf24; }
+    .msg-error { color: #f87171; }
+    .msg-debug { color: #7d8590; }
+
+    /* ── Empty state ── */
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      gap: 8px;
+    }
+    #empty-state svg { opacity: 0.3; }
+    #empty-state p { font-size: 13px; }
+    #empty-state small { font-size: 11px; opacity: 0.7; }
+
+    /* ── Status bar ── */
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 16px;
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .live-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Toolbar ── -->
+  <div class="toolbar">
+    <div class="toolbar-brand">
+      <div class="toolbar-logo">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+      </div>
+      <span class="toolbar-title" id="page-title">Agent Logs</span>
+    </div>
+
+    <div class="toolbar-sep"></div>
+
+    <!-- Search -->
+    <div class="search-wrap">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input id="search" type="text" placeholder="Filter logs..." autocomplete="off" spellcheck="false" />
+    </div>
+
+    <!-- Agent filter -->
+    <select id="agent-filter">
+      <option value="">All agents</option>
+    </select>
+
+    <!-- Level filter -->
+    <select id="level-filter">
+      <option value="">All levels</option>
+      <option value="info">Info</option>
+      <option value="warn">Warn</option>
+      <option value="error">Error</option>
+      <option value="debug">Debug</option>
+    </select>
+
+    <!-- Clear -->
+    <button id="clear-btn" class="btn-clear">Clear</button>
+
+    <!-- Count -->
+    <div class="count-badge"><span id="log-count">0</span> entries</div>
+  </div>
+
+  <!-- ── Log container ── -->
+  <div id="log-container">
+    <div id="empty-state">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+      <p>No logs yet</p>
+      <small>Start an agent to see logs appear here in real time</small>
+    </div>
+  </div>
+
+  <!-- ── Status bar ── -->
+  <div class="statusbar">
+    <div class="live-dot"></div>
+    <span>Live — updates automatically</span>
+    <span style="margin-left:auto; opacity:0.5" id="status-agent">all agents</span>
+  </div>
+
+  <script type="module" src="index.js"></script>
+</body>
+</html>

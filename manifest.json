@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "LifetimeSoft Agent Host",
+  "version": "0.0.1",
+  "description": "Host application for running multiple AI agents built with @lifetimesoft/agent-sdk",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://app.lifetimesoft.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.openai.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "dist/popup/index.html",
+    "default_title": "LifetimeSoft Agent Host"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

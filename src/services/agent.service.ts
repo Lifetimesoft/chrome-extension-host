@@ -1,0 +1,94 @@
+/// <reference types="chrome" />
+
+/**
+ * Agent Service — install, uninstall, list agents from registry.
+ *
+ * Manages the metadata of installed agents in chrome.storage.local.
+ * Does not manage runtime state — that's runtime.service.ts.
+ */
+
+import {
+  getInstalledAgents,
+  getInstalledAgent,
+  upsertInstalledAgent,
+  removeInstalledAgent,
+  type InstalledAgent,
+} from "../storage/storage"
+import { bgLog } from "../utils/logger"
+
+export type { InstalledAgent }
+
+// ─── List ─────────────────────────────────────────────────────────────────────
+
+export async function listInstalledAgents(): Promise<InstalledAgent[]> {
+  return getInstalledAgents()
+}
+
+export async function getAgent(name: string): Promise<InstalledAgent | undefined> {
+  return getInstalledAgent(name)
+}
+
+// ─── Install ──────────────────────────────────────────────────────────────────
+
+/**
+ * Install an agent by name and version.
+ * Stores metadata in chrome.storage.local.
+ * The agent starts in "stopped" state — call runtimeService.startAgent() to run it.
+ */
+export async function installAgent(
+  name: string,
+  version: string,
+  config: Record<string, unknown> = {}
+): Promise<InstalledAgent> {
+  const existing = await getInstalledAgent(name)
+
+  if (existing) {
+    bgLog.info(`Agent "${name}" already installed (v${existing.version}) — updating to v${version}`)
+  } else {
+    bgLog.info(`Installing agent "${name}" v${version}...`)
+  }
+
+  const agent: InstalledAgent = {
+    name,
+    version,
+    status:       "stopped",
+    installed_at: Date.now(),
+    config,
+    // preserve existing instance_id if upgrading
+    ...(existing?.instance_id !== undefined ? { instance_id: existing.instance_id } : {}),
+  }
+
+  await upsertInstalledAgent(agent)
+  bgLog.info(`Agent "${name}" v${version} installed successfully`)
+  return agent
+}
+
+// ─── Uninstall ────────────────────────────────────────────────────────────────
+
+/**
+ * Uninstall an agent — removes metadata from storage.
+ * Caller is responsible for stopping the runtime before calling this.
+ */
+export async function uninstallAgent(name: string): Promise<void> {
+  const existing = await getInstalledAgent(name)
+  if (!existing) {
+    bgLog.warn(`Agent "${name}" is not installed — nothing to uninstall`)
+    return
+  }
+
+  await removeInstalledAgent(name)
+  bgLog.info(`Agent "${name}" uninstalled`)
+}
+
+// ─── Update config ────────────────────────────────────────────────────────────
+
+export async function updateAgentConfig(
+  name: string,
+  config: Record<string, unknown>
+): Promise<void> {
+  const agent = await getInstalledAgent(name)
+  if (!agent) throw new Error(`Agent "${name}" is not installed`)
+
+  await upsertInstalledAgent({ ...agent, config })
+  bgLog.info(`Agent "${name}" config updated`)
+}
