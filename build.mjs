@@ -29,6 +29,8 @@ async function ensureDir(dir) {
 await ensureDir("dist/popup")
 await ensureDir("dist/dashboard")
 await ensureDir("dist/logs")
+await ensureDir("dist/offscreen")
+await ensureDir("dist/sandbox")
 
 // Bundle background service worker
 await build({
@@ -58,10 +60,19 @@ await build({
   outfile: "dist/logs/index.js",
 })
 
+// Bundle offscreen document script
+await build({
+  ...sharedOptions,
+  entryPoints: ["src/offscreen/index.ts"],
+  outfile: "dist/offscreen/index.js",
+})
+
 // Copy HTML files to dist
-await copyFile("src/popup/index.html",    "dist/popup/index.html")
-await copyFile("src/dashboard/index.html","dist/dashboard/index.html")
-await copyFile("src/logs/index.html",     "dist/logs/index.html")
+await copyFile("src/popup/index.html",     "dist/popup/index.html")
+await copyFile("src/dashboard/index.html", "dist/dashboard/index.html")
+await copyFile("src/logs/index.html",      "dist/logs/index.html")
+await copyFile("src/offscreen/index.html", "dist/offscreen/index.html")
+await copyFile("src/sandbox/index.html",   "dist/sandbox/index.html")
 
 // Copy manifest.json to dist root — Chrome loads the extension from this directory
 await copyFile("manifest.json", "dist/manifest.json")

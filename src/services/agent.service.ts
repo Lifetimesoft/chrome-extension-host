@@ -12,11 +12,14 @@ import {
   getInstalledAgent,
   upsertInstalledAgent,
   removeInstalledAgent,
+  getTokens,
   type InstalledAgent,
 } from "../storage/storage"
 import { bgLog } from "../utils/logger"
 
 export type { InstalledAgent }
+
+const API_BASE = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── List ─────────────────────────────────────────────────────────────────────
 
@@ -32,7 +35,8 @@ export async function getAgent(name: string): Promise<InstalledAgent | undefined
 
 /**
  * Install an agent by name and version.
- * Stores metadata in chrome.storage.local.
+ * Validates the agent exists in the registry before saving metadata.
+ * If version is "latest" or omitted, resolves the actual version from the API.
  * The agent starts in "stopped" state — call runtimeService.startAgent() to run it.
  */
 export async function installAgent(
@@ -40,17 +44,55 @@ export async function installAgent(
   version: string,
   config: Record<string, unknown> = {}
 ): Promise<InstalledAgent> {
+  // ── Validate against registry ──
+  const { accessToken } = await getTokens()
+  if (!accessToken) throw new Error("Not logged in — please authenticate first")
+
+  const isLatest = !version || version === "latest"
+  const query = isLatest
+    ? `?name=${encodeURIComponent(name)}`
+    : `?name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}`
+
+  const res = await fetch(`${API_BASE}/agents/info${query}`, {
+    headers: { Authorization: accessToken },
+  })
+
+  if (res.status === 404) {
+    const body = await res.json() as { message?: string }
+    throw new Error(body.message ?? `Agent "${name}" not found in registry`)
+  }
+
+  if (!res.ok) {
+    throw new Error(`Registry check failed (${res.status})`)
+  }
+
+  const info = await res.json() as {
+    success: boolean
+    name:           string
+    version:        string
+    latest_version: string
+    description:    string
+  }
+
+  if (!info.success) {
+    throw new Error(`Agent "${name}" not found in registry`)
+  }
+
+  // Use the resolved version from the API (handles "latest" → actual semver)
+  const resolvedVersion = info.version
+
+  // ── Save to local storage ──
   const existing = await getInstalledAgent(name)
 
   if (existing) {
-    bgLog.info(`Agent "${name}" already installed (v${existing.version}) — updating to v${version}`)
+    bgLog.info(`Agent "${name}" already installed (v${existing.version}) — updating to v${resolvedVersion}`)
   } else {
-    bgLog.info(`Installing agent "${name}" v${version}...`)
+    bgLog.info(`Installing agent "${name}" v${resolvedVersion}...`)
   }
 
   const agent: InstalledAgent = {
     name,
-    version,
+    version:      resolvedVersion,
     status:       "stopped",
     installed_at: Date.now(),
     config,
@@ -59,7 +101,7 @@ export async function installAgent(
   }
 
   await upsertInstalledAgent(agent)
-  bgLog.info(`Agent "${name}" v${version} installed successfully`)
+  bgLog.info(`Agent "${name}" v${resolvedVersion} installed successfully`)
   return agent
 }
 

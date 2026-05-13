@@ -185,6 +185,39 @@ async function run(): Promise<void> {
 
   await refreshStatus()
 
+  // ── Install agent ──
+  const installBtn  = el<HTMLButtonElement>("install-btn")
+  const installName = el<HTMLInputElement>("install-name")
+  const installVer  = el<HTMLInputElement>("install-version")
+
+  async function doInstall(): Promise<void> {
+    const name    = installName.value.trim()
+    const version = installVer.value.trim() || "latest"
+    if (!name) { setNotification("Please enter an agent name", true); return }
+
+    installBtn.disabled = true
+    setNotification(`Installing "${name}@${version}"...`, false)
+
+    const res = await sendMsg<{ success: boolean; error?: string }>({
+      type: "agent_install", name, version,
+    }).catch(e => ({ success: false, error: e instanceof Error ? e.message : String(e) }))
+
+    installBtn.disabled = false
+
+    if (res.success) {
+      installName.value = ""
+      installVer.value  = ""
+      setNotification(`"${name}@${version}" installed — click ▶ Start to run it`, false)
+      await refreshStatus()
+    } else {
+      setNotification(`Install failed: ${res.error ?? "unknown error"}`, true)
+    }
+  }
+
+  installBtn.addEventListener("click", doInstall)
+  installName.addEventListener("keydown", (e) => { if (e.key === "Enter") void doInstall() })
+  installVer.addEventListener("keydown",  (e) => { if (e.key === "Enter") void doInstall() })
+
   // ── Disconnect all ──
   el<HTMLButtonElement>("disconnect-all-btn").addEventListener("click", async () => {
     setNotification("Disconnecting all agents...", false)

@@ -12,6 +12,10 @@ import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
 import { listInstalledAgents, installAgent, uninstallAgent } from "../services/agent.service"
 import { startAgent, stopAgent, isAgentRunning } from "../services/runtime.service"
+import { handleOffscreenMessage } from "../services/sandbox.service"
+import { getTokens } from "../storage/storage"
+
+const APP_BASE = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -228,6 +232,60 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     chrome.tabs.create({ url })
       .then(() => sendResponse({ success: true }))
       .catch(() => sendResponse({ success: false }))
+    return true
+  }
+
+  // ── Offscreen: relay messages from offscreen document (sandbox logs/done/error) ──
+  if (
+    message.type === "offscreen_log"   ||
+    message.type === "offscreen_done"  ||
+    message.type === "offscreen_error"
+  ) {
+    handleOffscreenMessage(message as Record<string, unknown>)
+    sendResponse({ success: true })
+    return undefined
+  }
+
+  // ── AI proxy: sandbox agent calls ai.chat/image/video via offscreen → background ──
+  if (message.type === "agent_ai_call") {
+    const { agentName, method, args } = message as {
+      agentName: string
+      method:    string
+      args:      unknown[]
+    }
+
+    const handleAiCall = async () => {
+      const { accessToken } = await getTokens()
+      if (!accessToken) throw new Error("Not logged in")
+
+      const req = (args[0] ?? {}) as Record<string, unknown>
+      const aiUrl = `${APP_BASE}/ai/${method}`
+
+      const res = await fetch(aiUrl, {
+        method:  "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  accessToken,
+        },
+        body: JSON.stringify({ ...req, agent_name: agentName }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "unknown error")
+        throw new Error(`AI ${method} failed (${res.status}): ${text}`)
+      }
+
+      const data = await res.json() as { success: boolean; result?: unknown; message?: string }
+      if (!data.success) throw new Error(data.message ?? `AI ${method} rejected`)
+      return data.result
+    }
+
+    handleAiCall()
+      .then(result => sendResponse({ success: true, result }))
+      .catch((e: unknown) => sendResponse({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      }))
     return true
   }
 

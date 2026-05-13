@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8" /></head>
+<body>
+<!--
+  Sandboxed page — CSP is relaxed here so eval() / new Function() are allowed.
+  This page has NO access to chrome.* APIs.
+  All chrome API calls are proxied back to the offscreen document via postMessage.
+
+  Message protocol (sandbox ← offscreen):
+    { type: "sandbox_run",   agentName, code, agentCtx, accessToken, refreshToken, requestId }
+    { type: "sandbox_stop",  agentName }
+    { type: "sandbox_proxy_response", requestId, result?, error? }
+
+  Message protocol (sandbox → offscreen):
+    { type: "sandbox_log",           agentName, level, args }
+    { type: "sandbox_proxy_request", agentName, requestId, api, method, args }
+    { type: "sandbox_done",          agentName, requestId }
+    { type: "sandbox_error",         agentName, requestId, error }
+-->
+<script>
+"use strict"
+
+// ─── Running agent registry ───────────────────────────────────────────────────
+// agentName → { abort: AbortController }
+const _running = new Map()
+
+// ─── Pending proxy calls ──────────────────────────────────────────────────────
+// requestId → { resolve, reject }
+const _pendingProxy = new Map()
+
+let _proxySeq = 0
+function nextProxyId() { return `px_${++_proxySeq}` }
+
+// ─── Send message to offscreen (parent) ──────────────────────────────────────
+function send(msg) {
+  window.parent.postMessage(msg, "*")
+}
+
+// ─── Proxy call to background via offscreen ──────────────────────────────────
+// Returns a Promise that resolves when background responds
+function proxyCall(agentName, api, method, args) {
+  return new Promise((resolve, reject) => {
+    const requestId = nextProxyId()
+    _pendingProxy.set(requestId, { resolve, reject })
+    send({ type: "sandbox_proxy_request", agentName, requestId, api, method, args })
+    // timeout after 30s
+    setTimeout(() => {
+      if (_pendingProxy.has(requestId)) {
+        _pendingProxy.delete(requestId)
+        reject(new Error(`Proxy call ${api}.${method} timed out`))
+      }
+    }, 30_000)
+  })
+}
+
+// ─── Build ctx proxy for agent ────────────────────────────────────────────────
+function buildCtx(agentName, agentCtx, accessToken) {
+  return {
+    input:  agentCtx.input,
+    config: agentCtx.config,
+    env:    agentCtx.env,
+    meta:   agentCtx.meta,
+
+    log: {
+      info:  (...args) => send({ type: "sandbox_log", agentName, level: "info",  args: args.map(String) }),
+      warn:  (...args) => send({ type: "sandbox_log", agentName, level: "warn",  args: args.map(String) }),
+      error: (...args) => send({ type: "sandbox_log", agentName, level: "error", args: args.map(String) }),
+      debug: (...args) => send({ type: "sandbox_log", agentName, level: "debug", args: args.map(String) }),
+    },
+
+    storage: {
+      get:    (key)        => proxyCall(agentName, "storage", "get",    [key]),
+      set:    (key, value, opts) => proxyCall(agentName, "storage", "set",    [key, value, opts]),
+      delete: (key)        => proxyCall(agentName, "storage", "delete", [key]),
+    },
+
+    queue: {
+      push: (data) => proxyCall(agentName, "queue", "push", [data]),
+    },
+
+    ai: {
+      chat:  (req) => proxyCall(agentName, "ai", "chat",  [req]),
+      image: (req) => proxyCall(agentName, "ai", "image", [req]),
+      video: (req) => proxyCall(agentName, "ai", "video", [req]),
+    },
+  }
+}
+
+// ─── Run agent from code string ───────────────────────────────────────────────
+async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId) {
+  // Stop any existing run for this agent
+  if (_running.has(agentName)) {
+    _running.get(agentName).abort.abort()
+    _running.delete(agentName)
+  }
+
+  const abort = new AbortController()
+  _running.set(agentName, { abort })
+
+  try {
+    // Execute the bundled agent code in this sandbox context
+    // new Function is allowed here because this is a sandboxed page
+    const moduleExports = {}
+    const moduleObj = { exports: moduleExports }
+
+    // Wrap in IIFE to support both CJS-style (module.exports) and ESM-style default export
+    const wrappedCode = `
+      (function(module, exports) {
+        ${code}
+      })(arguments[0], arguments[1]);
+    `
+    new Function(wrappedCode)(moduleObj, moduleExports)
+
+    // Resolve the agent — support module.exports.default or module.exports directly
+    const agentModule = moduleObj.exports?.default ?? moduleObj.exports
+    if (!agentModule || typeof agentModule.run !== "function") {
+      throw new Error(`Agent "${agentName}" does not export a valid agent (missing .run method)`)
+    }
+    if (!agentModule.__isAgent) {
+      throw new Error(`Agent "${agentName}" was not created with defineAgent()`)
+    }
+
+    const ctx = buildCtx(agentName, agentCtx, accessToken)
+
+    if (abort.signal.aborted) return
+
+    await agentModule.run(ctx)
+
+    if (!abort.signal.aborted) {
+      send({ type: "sandbox_done", agentName, requestId })
+    }
+  } catch (e) {
+    if (!abort.signal.aborted) {
+      send({ type: "sandbox_error", agentName, requestId, error: e instanceof Error ? e.message : String(e) })
+    }
+  } finally {
+    _running.delete(agentName)
+  }
+}
+
+// ─── Message handler ──────────────────────────────────────────────────────────
+window.addEventListener("message", (event) => {
+  const msg = event.data
+  if (!msg || typeof msg !== "object") return
+
+  // Run agent
+  if (msg.type === "sandbox_run") {
+    const { agentName, code, agentCtx, accessToken, refreshToken, requestId } = msg
+    runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId)
+    return
+  }
+
+  // Stop agent
+  if (msg.type === "sandbox_stop") {
+    const { agentName } = msg
+    if (_running.has(agentName)) {
+      _running.get(agentName).abort.abort()
+      _running.delete(agentName)
+    }
+    return
+  }
+
+  // Proxy response from background (via offscreen)
+  if (msg.type === "sandbox_proxy_response") {
+    const { requestId, result, error } = msg
+    const pending = _pendingProxy.get(requestId)
+    if (!pending) return
+    _pendingProxy.delete(requestId)
+    if (error) {
+      pending.reject(new Error(error))
+    } else {
+      pending.resolve(result)
+    }
+    return
+  }
+})
+</script>
+</body>
+</html>

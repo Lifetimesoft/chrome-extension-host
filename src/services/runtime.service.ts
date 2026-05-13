@@ -4,28 +4,31 @@
  * Runtime Service — manages running agent instances.
  *
  * Mirrors how lifectl manages containers:
- * - startAgent(name) — POST /agents/run or /agents/restart → createChromeRuntime → runtime.start()
- * - stopAgent(name)  — runtime.stop()
+ * - startAgent(name) — POST /agents/run or /agents/restart → runInSandbox()
+ * - stopAgent(name)  — stopInSandbox()
  * - getStatus(name)  — running/stopped/error
  *
- * Stores ChromeRuntimeHandle per agent in a Map.
+ * Agent code is fetched from the registry and executed inside a sandboxed
+ * iframe via the offscreen document. This bypasses MV3's eval() restriction
+ * while keeping agent code isolated from the extension's chrome.* APIs.
  */
 
-import { createChromeRuntime, type ChromeRuntimeHandle } from "@lifetimesoft/agent-sdk/runtime-chrome"
-import type { Context, Agent } from "@lifetimesoft/agent-sdk"
+import type { Context } from "@lifetimesoft/agent-sdk"
 import {
   getInstalledAgent,
   upsertInstalledAgent,
   updateAgentStatus,
   getTokens,
 } from "../storage/storage"
-import { createLogger, bgLog } from "../utils/logger"
+import { bgLog } from "../utils/logger"
+import { runInSandbox, stopInSandbox } from "./sandbox.service"
 
 const BASE_URL = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── Runtime registry ─────────────────────────────────────────────────────────
+// Track which agents are currently running (in sandbox)
 
-const _runtimes = new Map<string, ChromeRuntimeHandle>()
+const _running = new Set<string>()
 
 // ─── SaaS API calls ───────────────────────────────────────────────────────────
 
@@ -119,16 +122,16 @@ async function restartRun(
 // ─── Start agent ──────────────────────────────────────────────────────────────
 
 export async function startAgent(agentName: string): Promise<void> {
-  // Stop any existing runtime for this agent first
+  // Stop any existing run first
   await stopAgent(agentName)
 
   const agent = await getInstalledAgent(agentName)
   if (!agent) throw new Error(`Agent "${agentName}" is not installed`)
 
-  const { accessToken, refreshToken } = await getTokens()
+  const { accessToken } = await getTokens()
   if (!accessToken) throw new Error("Not logged in — please authenticate first")
 
-  bgLog.info(`Starting agent "${agentName}" v${agent.version}...`)
+  bgLog.info(`Starting agent "${agentName}" v${agent.version} via sandbox...`)
 
   let agentCtx: Pick<Context, "input" | "config" | "env" | "meta">
   let instanceId: number | undefined = agent.instance_id
@@ -163,7 +166,7 @@ export async function startAgent(agentName: string): Promise<void> {
     throw e
   }
 
-  // Update stored metadata with new instance/run info
+  // Update stored metadata
   await upsertInstalledAgent({
     ...agent,
     instance_id: instanceId,
@@ -173,50 +176,40 @@ export async function startAgent(agentName: string): Promise<void> {
 
   bgLog.info(`Got ctx for "${agentName}" — run_id: ${agentCtx.meta.run_id}`)
 
-  // Create per-agent logger and attach to ctx
-  const agentLogger = createLogger(agentName)
-  const agentCtxWithLog = {
-    ...agentCtx,
-    log: agentLogger,
-  } as typeof agentCtx
+  _running.add(agentName)
 
-  // Dynamically import the agent module
-  // Agents are expected to be installed as named modules or bundled
-  // For the host, we use a dynamic import pattern
-  let agentModule: { default: unknown }
-  try {
-    // Agents are loaded by name — they must be registered in the host bundle
-    agentModule = await loadAgentModule(agentName)
-  } catch (e) {
+  // Run agent in sandbox — fire and forget (scheduler handles repeats via alarms)
+  runInSandbox({
+    agentName,
+    agentVersion: agent.version,
+    agentCtx,
+  }).then(() => {
+    bgLog.info(`Agent "${agentName}" sandbox run completed`)
+    // Only mark stopped if not already stopped by stopAgent()
+    if (_running.has(agentName)) {
+      _running.delete(agentName)
+      updateAgentStatus(agentName, "stopped").catch(() => {})
+    }
+  }).catch((e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e)
-    bgLog.error(`Failed to load agent module "${agentName}":`, msg)
-    await updateAgentStatus(agentName, "error")
-    throw new Error(`Cannot load agent module "${agentName}": ${msg}`)
-  }
-
-  const handle = createChromeRuntime(agentModule.default as Agent, {
-    agentCtx:    agentCtxWithLog,
-    accessToken,
-    refreshToken,
-    storageArea: "local",
-    alarmPrefix: `lts_agent_${agentName}`,
+    bgLog.error(`Agent "${agentName}" sandbox run failed:`, msg)
+    if (_running.has(agentName)) {
+      _running.delete(agentName)
+      updateAgentStatus(agentName, "error").catch(() => {})
+    }
   })
 
-  _runtimes.set(agentName, handle)
-
-  await handle.start()
-  bgLog.info(`Agent "${agentName}" runtime started`)
+  bgLog.info(`Agent "${agentName}" dispatched to sandbox`)
 }
 
 // ─── Stop agent ───────────────────────────────────────────────────────────────
 
 export async function stopAgent(agentName: string): Promise<void> {
-  const handle = _runtimes.get(agentName)
-  if (!handle) return
+  if (!_running.has(agentName)) return
 
   bgLog.info(`Stopping agent "${agentName}"...`)
-  await handle.stop().catch(() => { /* best-effort */ })
-  _runtimes.delete(agentName)
+  _running.delete(agentName)
+  await stopInSandbox(agentName)
   await updateAgentStatus(agentName, "stopped")
   bgLog.info(`Agent "${agentName}" stopped`)
 }
@@ -224,11 +217,11 @@ export async function stopAgent(agentName: string): Promise<void> {
 // ─── Status ───────────────────────────────────────────────────────────────────
 
 export function isAgentRunning(agentName: string): boolean {
-  return _runtimes.has(agentName)
+  return _running.has(agentName)
 }
 
 export async function getStatus(agentName: string): Promise<"running" | "stopped" | "error"> {
-  if (_runtimes.has(agentName)) return "running"
+  if (_running.has(agentName)) return "running"
   const agent = await getInstalledAgent(agentName)
   return agent?.status ?? "stopped"
 }
@@ -236,33 +229,6 @@ export async function getStatus(agentName: string): Promise<"running" | "stopped
 // ─── Stop all ─────────────────────────────────────────────────────────────────
 
 export async function stopAllAgents(): Promise<void> {
-  const names = Array.from(_runtimes.keys())
+  const names = Array.from(_running)
   await Promise.all(names.map(name => stopAgent(name)))
-}
-
-// ─── Agent module loader ──────────────────────────────────────────────────────
-
-/**
- * Load an agent module by name.
- *
- * In the host extension, agents are bundled separately and registered
- * via a registry. This function looks up the registry and returns the module.
- *
- * The registry is populated by the build process or by dynamic installation.
- */
-const _agentRegistry = new Map<string, { default: unknown }>()
-
-export function registerAgentModule(name: string, module: { default: unknown }): void {
-  _agentRegistry.set(name, module)
-}
-
-async function loadAgentModule(name: string): Promise<{ default: unknown }> {
-  const mod = _agentRegistry.get(name)
-  if (!mod) {
-    throw new Error(
-      `Agent "${name}" is not registered. ` +
-      `Call registerAgentModule("${name}", module) before starting the agent.`
-    )
-  }
-  return mod
 }

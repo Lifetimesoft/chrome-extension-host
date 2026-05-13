@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8" /></head>
+<body>
+<!--
+  Offscreen Document — bridge between Background SW and Sandboxed iframe.
+
+  Background SW cannot hold a reference to a sandboxed iframe directly
+  (SW has no DOM). This offscreen document:
+    1. Hosts the sandboxed iframe
+    2. Relays messages: background ↔ offscreen ↔ sandbox
+    3. Handles chrome.* proxy calls on behalf of the sandbox
+
+  Message protocol (background → offscreen via chrome.runtime.sendMessage):
+    { type: "offscreen_run",  agentName, code, agentCtx, accessToken, refreshToken }
+    { type: "offscreen_stop", agentName }
+
+  Message protocol (offscreen → background via chrome.runtime.sendMessage):
+    { type: "offscreen_log",   agentName, level, args }
+    { type: "offscreen_done",  agentName }
+    { type: "offscreen_error", agentName, error }
+-->
+<iframe
+  id="sandbox-frame"
+  src="../sandbox/index.html"
+  sandbox="allow-scripts"
+  style="display:none"
+></iframe>
+<script type="module" src="index.js"></script>
+</body>
+</html>
