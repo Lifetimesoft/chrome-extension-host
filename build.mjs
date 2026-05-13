@@ -63,4 +63,13 @@ await copyFile("src/popup/index.html",    "dist/popup/index.html")
 await copyFile("src/dashboard/index.html","dist/dashboard/index.html")
 await copyFile("src/logs/index.html",     "dist/logs/index.html")
 
+// Copy manifest.json to dist root — Chrome loads the extension from this directory
+await copyFile("manifest.json", "dist/manifest.json")
+
+// Copy icons to dist
+await ensureDir("dist/icons")
+await copyFile("src/icons/icon16.png",  "dist/icons/icon16.png")
+await copyFile("src/icons/icon48.png",  "dist/icons/icon48.png")
+await copyFile("src/icons/icon128.png", "dist/icons/icon128.png")
+
 console.log("✅ Extension host build complete → dist/")

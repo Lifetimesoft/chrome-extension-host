@@ -68,6 +68,10 @@ function showMainView(status: StatusResponse): void {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run(): Promise<void> {
+  // Show extension version in header
+  const manifest = chrome.runtime.getManifest()
+  el<HTMLSpanElement>("ext-version").textContent = `(v${manifest.version})`
+
   const status = await sendMsg<StatusResponse>({ type: "get_status" }).catch(
     () => ({ loggedIn: false, agents: [] } as StatusResponse)
   )
