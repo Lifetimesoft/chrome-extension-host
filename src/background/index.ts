@@ -265,7 +265,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         method:  "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization:  accessToken,
+          Authorization:  `Bearer ${accessToken}`,
         },
         body: JSON.stringify({ ...req, agent_name: agentName }),
       })

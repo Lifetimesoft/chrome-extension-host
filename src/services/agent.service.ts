@@ -35,7 +35,7 @@ export async function getAgent(name: string): Promise<InstalledAgent | undefined
 
 /**
  * Install an agent by name and version.
- * Validates the agent exists in the registry before saving metadata.
+ * Validates the agent exists in the registry and is compatible with this host.
  * If version is "latest" or omitted, resolves the actual version from the API.
  * The agent starts in "stopped" state — call runtimeService.startAgent() to run it.
  */
@@ -50,8 +50,8 @@ export async function installAgent(
 
   const isLatest = !version || version === "latest"
   const query = isLatest
-    ? `?name=${encodeURIComponent(name)}`
-    : `?name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}`
+    ? `?name=${encodeURIComponent(name)}&host=chrome`
+    : `?name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}&host=chrome`
 
   const res = await fetch(`${API_BASE}/agents/info${query}`, {
     headers: { Authorization: accessToken },
@@ -67,15 +67,27 @@ export async function installAgent(
   }
 
   const info = await res.json() as {
-    success: boolean
-    name:           string
-    version:        string
+    success:      boolean
+    name:         string
+    version:      string
     latest_version: string
-    description:    string
+    description:  string
+    capabilities: unknown
+    compatible:   boolean
+    missing:      string[]
   }
 
   if (!info.success) {
     throw new Error(`Agent "${name}" not found in registry`)
+  }
+
+  // ── Check host compatibility ──
+  if (info.compatible === false) {
+    throw new Error(
+      `Agent "${name}" is not compatible with this host. ` +
+      `Missing capabilities: ${info.missing.join(", ")}. ` +
+      `This agent requires a Node.js host.`
+    )
   }
 
   // Use the resolved version from the API (handles "latest" → actual semver)

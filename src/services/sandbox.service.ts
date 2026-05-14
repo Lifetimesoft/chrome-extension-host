@@ -20,7 +20,7 @@ import { createLogger } from "../utils/logger"
 import { getTokens } from "../storage/storage"
 
 const OFFSCREEN_URL = chrome.runtime.getURL("offscreen/index.html")
-const REGISTRY_BASE = "https://registry.lifetimesoft.com"
+const API_BASE      = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── Offscreen document lifecycle ────────────────────────────────────────────
 
@@ -59,18 +59,107 @@ async function fetchAgentBundle(name: string, version: string): Promise<string> 
   const key = bundleCacheKey(name, version)
   if (_bundleCache.has(key)) return _bundleCache.get(key)!
 
-  const url = `${REGISTRY_BASE}/agents/${encodeURIComponent(name)}/${encodeURIComponent(version)}/bundle.js`
-  bgLog.info(`Fetching agent bundle: ${url}`)
+  bgLog.info(`Fetching agent bundle "${name}@${version}" from registry...`)
 
-  const res = await fetch(url)
+  const { accessToken } = await getTokens()
+  if (!accessToken) throw new Error("Not logged in — cannot fetch agent bundle")
+
+  // Pull the tar.gz from the registry API
+  const res = await fetch(`${API_BASE}/agents/pull`, {
+    method:  "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization:  accessToken,
+    },
+    body: JSON.stringify({ name, version }),
+  })
+
   if (!res.ok) {
-    throw new Error(`Failed to fetch agent bundle "${name}@${version}" (${res.status})`)
+    const msg = await res.text().catch(() => "unknown error")
+    throw new Error(`Failed to fetch agent bundle "${name}@${version}" (${res.status}): ${msg}`)
   }
 
-  const code = await res.text()
+  // Decompress gzip → tar → extract dist/index.js using browser-native APIs
+  const tarBuffer = await decompressGzip(await res.arrayBuffer())
+  const code = extractFileFromTar(tarBuffer, "dist/index.js")
+
+  if (!code) {
+    throw new Error(`Agent bundle "${name}@${version}" does not contain dist/index.js`)
+  }
+
   _bundleCache.set(key, code)
   bgLog.info(`Agent bundle "${name}@${version}" cached (${code.length} bytes)`)
   return code
+}
+
+/**
+ * Decompress a gzip ArrayBuffer using the browser-native DecompressionStream API.
+ */
+async function decompressGzip(compressed: ArrayBuffer): Promise<ArrayBuffer> {
+  const ds = new DecompressionStream("gzip")
+  const writer = ds.writable.getWriter()
+  const reader = ds.readable.getReader()
+
+  writer.write(compressed)
+  writer.close()
+
+  const chunks: Uint8Array[] = []
+  let totalLength = 0
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    totalLength += value.length
+  }
+
+  const result = new Uint8Array(totalLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    result.set(chunk, offset)
+    offset += chunk.length
+  }
+  return result.buffer
+}
+
+/**
+ * Extract a specific file from a tar archive (uncompressed).
+ * Returns the file content as a UTF-8 string, or null if not found.
+ *
+ * Tar format: 512-byte header blocks followed by file data padded to 512-byte blocks.
+ */
+function extractFileFromTar(tarBuffer: ArrayBuffer, targetPath: string): string | null {
+  const view   = new Uint8Array(tarBuffer)
+  const dec    = new TextDecoder("utf-8")
+  let   offset = 0
+
+  while (offset + 512 <= view.length) {
+    // Read filename from header (bytes 0–99, null-terminated)
+    const nameBytes = view.slice(offset, offset + 100)
+    const nameEnd   = nameBytes.indexOf(0)
+    const name      = dec.decode(nameBytes.slice(0, nameEnd < 0 ? 100 : nameEnd)).trim()
+
+    // Read file size from header (bytes 124–135, octal ASCII)
+    const sizeOctal = dec.decode(view.slice(offset + 124, offset + 136)).trim().replace(/\0/g, "")
+    const fileSize  = parseInt(sizeOctal, 8) || 0
+
+    // Empty header = end of archive
+    if (!name) break
+
+    const dataOffset = offset + 512
+
+    // Normalise path: strip leading "./" or "/"
+    const normName = name.replace(/^\.\//, "").replace(/^\//, "")
+
+    if (normName === targetPath && fileSize > 0) {
+      return dec.decode(view.slice(dataOffset, dataOffset + fileSize))
+    }
+
+    // Advance to next header (data padded to 512-byte boundary)
+    offset = dataOffset + Math.ceil(fileSize / 512) * 512
+  }
+
+  return null
 }
 
 export function clearBundleCache(name?: string, version?: string): void {

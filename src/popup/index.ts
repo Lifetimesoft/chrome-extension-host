@@ -81,8 +81,8 @@ async function run(): Promise<void> {
   } else {
     // Check if a login is already in progress (SW was polling while popup was closed)
     const pending = await chrome.storage.local.get("lts_login_pending")
-    const loginState = pending["lts_login_pending"] as { deadline: number } | undefined
-    const isPolling = !!loginState && loginState.deadline > Date.now()
+    const loginState = pending["lts_login_pending"] as { deadline?: number } | undefined
+    const isPolling = !!loginState?.deadline && loginState.deadline > Date.now()
     showLoginView(isPolling)
   }
 
