@@ -11,29 +11,59 @@ This extension acts as a **Host Application** for browser-based agents, similar 
 The Lifetimesoft Chrome Extension Host allows users to:
 
 * Login to Lifetimesoft SaaS
-* Browse and install agents from the marketplace
-* Configure agent environment variables
+* Install agents from the registry via the dashboard
 * Start and stop agents
 * View logs
 * Run multiple agents in a single extension
 * Schedule agents using Chrome Alarms
-* Access browser APIs such as tabs, cookies, and DOM
 
 ---
 
 ## Architecture
 
 ```text
-Lifetimesoft SaaS
-    ↓
-Marketplace / Registry
-    ↓
+Lifetimesoft SaaS (app-ai)
+    ↓  /agents/info  (compatibility check)
+    ↓  /agents/pull  (download bundle)
 Chrome Extension Host
-    ↓
-@lifetimesoft/agent-sdk
-    ↓
-Installed Agents
+    ├── Background Service Worker
+    ├── Offscreen Document  ←→  Sandbox iframe
+    └── @lifetimesoft/agent-sdk (agent code)
 ```
+
+### Sandbox Execution
+
+Agent code runs inside a **sandboxed iframe** via an Offscreen Document. This satisfies MV3's restriction on dynamic code evaluation while keeping agents isolated from the extension's own context.
+
+```text
+Background SW
+    → chrome.runtime.sendMessage("offscreen_run")
+    → Offscreen Document
+        → postMessage to sandbox iframe
+            → new Function(agentCode)(ctx)
+    ← postMessage back (log / done / error)
+    ← chrome.runtime.sendMessage back to background
+```
+
+The context proxy (`ctx`) relays `ctx.storage`, `ctx.ai`, and `ctx.log` calls back to the background service worker via `postMessage`, so agents never touch `chrome.*` APIs directly.
+
+---
+
+## Capabilities & Compatibility
+
+Before installing an agent, the host calls `/agents/info?host=chrome` to verify the agent is compatible with the Chrome runtime.
+
+The server checks the agent's declared `capabilities` against the Chrome host's supported feature set:
+
+| Category | Chrome Host |
+|---|---|
+| `ai.chat` | ✅ |
+| `ai.image` | ✅ |
+| `ai.video` | ✅ |
+| `system.fs` | ❌ |
+| `system.browser-automation` | ❌ |
+
+If the agent requires capabilities the Chrome host does not support (e.g. `system.fs`), installation is rejected with a clear error message.
 
 ---
 
@@ -44,53 +74,30 @@ Installed Agents
 This Chrome extension is a Host Application responsible for:
 
 * Authentication
-* Downloading agents
-* Running agents
-* Scheduling
+* Downloading and caching agent bundles
+* Running agents inside a sandbox
+* Scheduling via `chrome.alarms`
 * Logging
-* Monitoring
 * Configuration UI
 
 ### Agent
 
-An Agent is a package built with `@lifetimesoft/agent-sdk` containing business logic.
+An Agent is a package built with `@lifetimesoft/agent-sdk` containing portable business logic. The agent code itself has no dependency on Chrome APIs.
 
-### Runtime
+### Sandbox
 
-The extension provides a Chrome-specific runtime using:
-
-* Background Service Worker
-* `chrome.storage`
-* `chrome.alarms`
-* `chrome.tabs`
-* `chrome.cookies`
-* `chrome.scripting`
+Agent code is executed inside a sandboxed iframe using `new Function(code)`. The sandbox communicates with the host only through `postMessage`.
 
 ---
 
 ## One Extension, Multiple Agents
 
-This extension supports multiple installed agents.
-
 ```text
 Chrome Extension Host
-├── pt-commenter
-├── short-video-generator
+├── hello-world-agent
 ├── web-summarizer
 └── custom-agent
 ```
-
----
-
-## Installation Model
-
-### Install Extension Once
-
-Users install the extension from the Chrome Web Store.
-
-### Install Agents from Marketplace
-
-Users can install and uninstall agents from the Lifetimesoft Marketplace without reinstalling the extension.
 
 ---
 
@@ -98,32 +105,33 @@ Users can install and uninstall agents from the Lifetimesoft Marketplace without
 
 ### Install Agent
 
-1. Download agent bundle from registry
-2. Store bundle in `chrome.storage.local`
-3. Save metadata and configuration
+1. Call `/agents/info?host=chrome` — verify agent exists and is compatible
+2. Save metadata to `chrome.storage.local`
+3. Agent starts in `stopped` state
 
 ### Start Agent
 
-1. Load agent bundle
-2. Create execution context (`ctx`)
-3. Schedule with `chrome.alarms`
-4. Run `agent.run(ctx)`
+1. Fetch agent bundle from `/agents/pull` (cached in memory)
+2. Decompress `.tar.gz` → extract `dist/index.js`
+3. Send code to offscreen document → sandbox iframe
+4. Sandbox executes `agent.run(ctx)`
+5. Schedule next run via `chrome.alarms`
 
 ### Stop Agent
 
 1. Remove alarms
-2. Update status to `stopped`
+2. Send stop signal to sandbox
+3. Update status to `stopped`
 
 ### Uninstall Agent
 
-1. Stop agent
-2. Remove stored files and configuration
+1. Stop agent if running
+2. Remove metadata from storage
+3. Clear bundle cache
 
 ---
 
 ## Scheduling
-
-The extension supports the same scheduler configuration as the Node runtime.
 
 ```json
 { "type": "none" }
@@ -139,33 +147,20 @@ Implemented using `chrome.alarms`.
 
 ### Popup
 
-Quick access panel used for:
+Quick access panel:
 
-* Open Dashboard
 * Login / Logout
-* View running agent count
+* Running agent count
+* Open Dashboard button
 
 ### Dashboard
 
-Main management interface opened in a new tab.
+Full management interface (opens in a new tab):
 
-Sections:
-
-* Marketplace
-* Installed Agents
-* Agent Details
-* Logs
-* Settings
-
-### Agent Detail Page
-
-Each agent has its own detail page for:
-
-* Start / Stop
-* Update
-* Uninstall
-* Configure environment variables
-* View logs
+* Install agents by name + version
+* Start / Stop / Uninstall agents
+* View agent status badges
+* Settings (disconnect all, reconnect all, sign out)
 
 ---
 
@@ -175,7 +170,7 @@ Each agent has its own detail page for:
 
 ```json
 {
-  "name": "pt-commenter",
+  "name": "hello-world-agent",
   "version": "0.0.1",
   "status": "running",
   "config": {},
@@ -185,86 +180,17 @@ Each agent has its own detail page for:
 
 ---
 
-## Phase 1 Limitation
-
-Each installed agent can run only one instance.
-
-```text
-1 Installed Agent = 1 Running Instance
-```
-
-Multi-instance support may be added in a future version.
-
----
-
-## Browser Capabilities
-
-Agents can request browser features in `agent.json`.
-
-```json
-{
-  "capabilities": {
-    "browser": {
-      "features": ["tabs", "cookies", "dom", "scripting"]
-    }
-  }
-}
-```
-
-These capabilities are exposed through `ctx.browser`.
-
----
-
-## Authentication
-
-The extension authenticates with Lifetimesoft SaaS and stores access tokens securely in `chrome.storage.local`.
-
-The host is responsible for:
-
-* Login
-* Logout
-* Token refresh
-* API requests
-
-Agents never handle SaaS authentication directly.
-
----
-
-## Logging
-
-All logs produced by `ctx.log` are stored locally and displayed in the dashboard.
-
-Example:
-
-```ts
-ctx.log.info("Agent started");
-ctx.log.error("Something went wrong");
-```
-
----
-
-## Monitoring
-
-The host may send:
-
-* Heartbeats
-* Status updates
-* Optional logs
-
-to Lifetimesoft SaaS for monitoring.
-
----
-
 ## Supported Runtime APIs
 
 Available to agents through `ctx`:
 
-* `ctx.ai`
-* `ctx.storage`
-* `ctx.queue`
-* `ctx.log`
-* `ctx.meta`
-* `ctx.browser`
+| API | Description |
+|---|---|
+| `ctx.ai` | AI chat / image / video (proxied via background) |
+| `ctx.storage` | Key-value storage (proxied via background) |
+| `ctx.log` | Structured logging |
+| `ctx.meta` | Agent metadata and run info |
+| `ctx.config` | Agent environment config |
 
 ---
 
@@ -274,12 +200,6 @@ Available to agents through `ctx`:
 
 ```bash
 npm install
-```
-
-### Run Development Build
-
-```bash
-npm run dev
 ```
 
 ### Build Extension
@@ -301,15 +221,20 @@ npm run build
 
 ```text
 chrome-extension-host/
-├── public/
 ├── src/
-│   ├── background/
-│   ├── popup/
-│   ├── dashboard/
-│   ├── runtime/
+│   ├── background/       ← Service worker entry point
+│   ├── popup/            ← Popup UI
+│   ├── dashboard/        ← Dashboard UI (full tab)
+│   ├── offscreen/        ← Offscreen document (sandbox bridge)
+│   ├── sandbox/          ← Sandboxed iframe (agent execution)
+│   ├── logs/             ← Log viewer UI
 │   ├── services/
-│   ├── storage/
-│   └── components/
+│   │   ├── agent.service.ts    ← Install / uninstall / list
+│   │   ├── auth.service.ts     ← Login / logout / token refresh
+│   │   ├── runtime.service.ts  ← Start / stop agent runtime
+│   │   └── sandbox.service.ts  ← Bundle fetch + sandbox execution
+│   ├── storage/          ← chrome.storage wrappers
+│   └── utils/            ← Logger, helpers
 ├── manifest.json
 └── package.json
 ```
@@ -318,48 +243,12 @@ chrome-extension-host/
 
 ## Relationship to Other Projects
 
-### `@lifetimesoft/agent-sdk`
-
-Provides:
-
-* `defineAgent()`
-* `Context`
-* Runtime abstractions
-
-### `@lifetimesoft/lifectl`
-
-CLI Host Application for Node.js agents.
-
-### Chrome Extension Host
-
-GUI Host Application for browser-based agents.
-
----
-
-## Future Host Applications
-
-The same architecture can be used for:
-
-* Windows Host
-* macOS Host
-* Mobile Host
-* Edge / IoT Host
-
----
-
-## Analogy
-
-### Steam
-
-* Steam Client = Host Application
-* Game = Agent
-* Steam Store = Marketplace
-
-### Docker
-
-* Docker Desktop = Host Application
-* Container Image = Agent
-* Docker Hub = Registry
+| Project | Role |
+|---|---|
+| `@lifetimesoft/agent-sdk` | Provides `defineAgent()`, `Context`, runtime abstractions |
+| `lifectl` | Node.js CLI Host — runs agents on the server |
+| `app-ai` | Backend registry — push/pull/info/run APIs |
+| `chrome-extension-host` | This project — Chrome GUI Host |
 
 ---
 
@@ -369,11 +258,9 @@ Write Agent Once, Run Anywhere.
 
 Agents built with `@lifetimesoft/agent-sdk` can run on:
 
-* Node.js
-* Chrome Extension
-* Windows Desktop
-* Mobile Apps
-* Future runtimes
+* Node.js (lifectl)
+* Chrome Extension (this project)
+* Future: Mobile, Desktop, Edge
 
 ---
 
