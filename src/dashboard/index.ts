@@ -218,29 +218,6 @@ async function run(): Promise<void> {
   installName.addEventListener("keydown", (e) => { if (e.key === "Enter") void doInstall() })
   installVer.addEventListener("keydown",  (e) => { if (e.key === "Enter") void doInstall() })
 
-  // ── Disconnect all ──
-  el<HTMLButtonElement>("disconnect-all-btn").addEventListener("click", async () => {
-    setNotification("Disconnecting all agents...", false)
-    await sendMsg({ type: "runtime_disconnect" }).catch(() => {})
-    await refreshStatus()
-    setNotification("All agents disconnected", false)
-  })
-
-  // ── Reconnect all ──
-  el<HTMLButtonElement>("reconnect-all-btn").addEventListener("click", async () => {
-    setNotification("Reconnecting agents...", false)
-    const res = await sendMsg<GenericResponse>({ type: "runtime_reconnect" }).catch(e => ({
-      success: false,
-      error: e instanceof Error ? e.message : String(e),
-    }))
-    await refreshStatus()
-    if (res.success) {
-      setNotification("Agents reconnected", false)
-    } else {
-      setNotification(`Reconnect failed: ${res.error ?? "unknown error"}`, true)
-    }
-  })
-
   // ── Logout ──
   el<HTMLButtonElement>("logout-btn").addEventListener("click", async () => {
     if (!confirm("Sign out? All running agents will be stopped.")) return
