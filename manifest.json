@@ -23,6 +23,12 @@
   "sandbox": {
     "pages": ["sandbox/index.html"]
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["sandbox/index.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "action": {
     "default_popup": "popup/index.html",
     "default_title": "LifetimeSoft Agent Host",

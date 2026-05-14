@@ -99,23 +99,25 @@ async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, re
   _running.set(agentName, { abort })
 
   try {
-    // Execute the bundled agent code in this sandbox context
-    // new Function is allowed here because this is a sandboxed page
+    // Execute the bundled agent code in this sandbox context.
+    // new Function() is allowed here because this page is sandboxed (allow-scripts, no allow-same-origin).
+    //
+    // The agent bundle is a CJS-style bundle (esbuild --format=cjs).
+    // We inject a `module` / `exports` shim so the bundle can assign to module.exports.
     const moduleExports = {}
     const moduleObj = { exports: moduleExports }
 
-    // Wrap in IIFE to support both CJS-style (module.exports) and ESM-style default export
-    const wrappedCode = `
-      (function(module, exports) {
-        ${code}
-      })(arguments[0], arguments[1]);
-    `
-    new Function(wrappedCode)(moduleObj, moduleExports)
+    // new Function(argName1, argName2, ..., body) — args are passed at call time
+    const fn = new Function("module", "exports", code)
+    fn(moduleObj, moduleExports)
 
-    // Resolve the agent — support module.exports.default or module.exports directly
+    // Resolve the agent — support module.exports.default (ESM interop) or module.exports directly
     const agentModule = moduleObj.exports?.default ?? moduleObj.exports
     if (!agentModule || typeof agentModule.run !== "function") {
-      throw new Error(`Agent "${agentName}" does not export a valid agent (missing .run method)`)
+      throw new Error(
+        `Agent "${agentName}" does not export a valid agent (missing .run). ` +
+        `Make sure the bundle is built with --format=cjs and exports a defineAgent() result.`
+      )
     }
     if (!agentModule.__isAgent) {
       throw new Error(`Agent "${agentName}" was not created with defineAgent()`)

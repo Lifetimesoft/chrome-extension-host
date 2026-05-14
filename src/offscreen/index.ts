@@ -16,8 +16,26 @@
 
 const sandboxFrame = document.getElementById("sandbox-frame") as HTMLIFrameElement
 
+// Wait for the sandbox iframe to finish loading before sending any messages.
+// The iframe src is set dynamically in the HTML via chrome.runtime.getURL().
+let _sandboxReady = false
+const _sandboxQueue: object[] = []
+
+sandboxFrame.addEventListener("load", () => {
+  _sandboxReady = true
+  // Flush any messages that arrived before the iframe was ready
+  for (const msg of _sandboxQueue) {
+    sandboxFrame.contentWindow?.postMessage(msg, "*")
+  }
+  _sandboxQueue.length = 0
+})
+
 function sendToSandbox(msg: object): void {
-  sandboxFrame.contentWindow?.postMessage(msg, "*")
+  if (_sandboxReady) {
+    sandboxFrame.contentWindow?.postMessage(msg, "*")
+  } else {
+    _sandboxQueue.push(msg)
+  }
 }
 
 // ─── chrome.* proxy handlers ──────────────────────────────────────────────────

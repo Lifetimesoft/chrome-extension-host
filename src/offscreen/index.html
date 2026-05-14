@@ -11,21 +11,28 @@
     2. Relays messages: background ↔ offscreen ↔ sandbox
     3. Handles chrome.* proxy calls on behalf of the sandbox
 
+  The sandbox iframe src is set dynamically via JS using chrome.runtime.getURL()
+  so it always resolves to the correct chrome-extension:// URL.
+
   Message protocol (background → offscreen via chrome.runtime.sendMessage):
-    { type: "offscreen_run",  agentName, code, agentCtx, accessToken, refreshToken }
+    { type: "offscreen_run",  agentName, code, agentCtx, accessToken, refreshToken, requestId }
     { type: "offscreen_stop", agentName }
 
   Message protocol (offscreen → background via chrome.runtime.sendMessage):
     { type: "offscreen_log",   agentName, level, args }
-    { type: "offscreen_done",  agentName }
-    { type: "offscreen_error", agentName, error }
+    { type: "offscreen_done",  agentName, requestId }
+    { type: "offscreen_error", agentName, requestId, error }
 -->
 <iframe
   id="sandbox-frame"
-  src="../sandbox/index.html"
   sandbox="allow-scripts"
   style="display:none"
 ></iframe>
+<script>
+  // Set sandbox src using chrome.runtime.getURL so it always resolves correctly
+  // regardless of where the offscreen document is loaded from.
+  document.getElementById("sandbox-frame").src = chrome.runtime.getURL("sandbox/index.html")
+</script>
 <script type="module" src="index.js"></script>
 </body>
 </html>
