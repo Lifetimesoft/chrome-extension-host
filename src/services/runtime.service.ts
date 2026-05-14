@@ -22,13 +22,17 @@ import {
 } from "../storage/storage"
 import { bgLog } from "../utils/logger"
 import { runInSandbox, stopInSandbox } from "./sandbox.service"
+import { startHeartbeat, stopHeartbeat } from "./heartbeat.service"
 
-const BASE_URL = "https://app.lifetimesoft.com/cli/ai-account-management"
+const BASE_URL = "https://app.lifetimesoft.com/cli/ai-account-management/agents"
 
 // ─── Runtime registry ─────────────────────────────────────────────────────────
 // Track which agents are currently running (in sandbox)
 
 const _running = new Set<string>()
+
+// Track agentCtx per running agent — needed for in-process trigger/config_updated
+const _agentCtx = new Map<string, Pick<Context, "input" | "config" | "env" | "meta">>()
 
 // ─── SaaS API calls ───────────────────────────────────────────────────────────
 
@@ -45,7 +49,7 @@ async function registerRun(
   agentVersion: string,
   accessToken: string
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta">; instance_id: number }> {
-  const res = await fetch(`${BASE_URL}/agents/run`, {
+  const res = await fetch(`${BASE_URL}/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -84,7 +88,7 @@ async function restartRun(
   instanceId: number,
   accessToken: string
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta"> }> {
-  const res = await fetch(`${BASE_URL}/agents/restart`, {
+  const res = await fetch(`${BASE_URL}/restart`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -178,6 +182,14 @@ export async function startAgent(agentName: string): Promise<void> {
 
   _running.add(agentName)
 
+  // Cache ctx for in-process trigger/config_updated handling
+  _agentCtx.set(agentName, agentCtx)
+
+  // Start WebSocket heartbeat so the DO knows the agent is alive
+  if (agentCtx.meta.run_id) {
+    startHeartbeat(agentName, agentCtx.meta.run_id, agentCtx.meta.runtime?.ws_url)
+  }
+
   // Run agent in sandbox — fire and forget (scheduler handles repeats via alarms)
   runInSandbox({
     agentName,
@@ -188,6 +200,7 @@ export async function startAgent(agentName: string): Promise<void> {
     // Only mark stopped if not already stopped by stopAgent()
     if (_running.has(agentName)) {
       _running.delete(agentName)
+      _agentCtx.delete(agentName)
       updateAgentStatus(agentName, "stopped").catch(() => {})
     }
   }).catch((e: unknown) => {
@@ -195,6 +208,7 @@ export async function startAgent(agentName: string): Promise<void> {
     bgLog.error(`Agent "${agentName}" sandbox run failed:`, msg)
     if (_running.has(agentName)) {
       _running.delete(agentName)
+      _agentCtx.delete(agentName)
       updateAgentStatus(agentName, "error").catch(() => {})
     }
   })
@@ -209,8 +223,23 @@ export async function stopAgent(agentName: string): Promise<void> {
 
   bgLog.info(`Stopping agent "${agentName}"...`)
   _running.delete(agentName)
+  _agentCtx.delete(agentName)
+
+  // Stop heartbeat before stopping sandbox so DO gets notified cleanly
+  const agent = await getInstalledAgent(agentName)
+  if (agent?.run_id) {
+    stopHeartbeat(agent.run_id)
+  }
+
   await stopInSandbox(agentName)
   await updateAgentStatus(agentName, "stopped")
+
+  // Notify platform so DO marks agent as STOPPED (not just OFFLINE via WS close)
+  const { accessToken } = await getTokens()
+  if (accessToken && agent?.run_id) {
+    await notifyStopped(agent.run_id, accessToken)
+  }
+
   bgLog.info(`Agent "${agentName}" stopped`)
 }
 
@@ -231,4 +260,76 @@ export async function getStatus(agentName: string): Promise<"running" | "stopped
 export async function stopAllAgents(): Promise<void> {
   const names = Array.from(_running)
   await Promise.all(names.map(name => stopAgent(name)))
+}
+
+// ─── Notify platform agent stopped ───────────────────────────────────────────
+
+async function notifyStopped(runId: string, accessToken: string): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/stopped`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: accessToken,
+      },
+      body: JSON.stringify({ run_id: runId, last_error: null }),
+    })
+  } catch {
+    // best-effort — DO will detect OFFLINE via WebSocket close anyway
+  }
+}
+
+// ─── In-process trigger (scheduler type: none) ────────────────────────────────
+
+/**
+ * Run the agent once in sandbox using the existing ctx — no new API call.
+ * Mirrors what runtime-chrome.ts does on WS trigger message.
+ */
+export async function triggerAgent(agentName: string): Promise<void> {
+  const agent = await getInstalledAgent(agentName)
+  if (!agent) throw new Error(`Agent "${agentName}" is not installed`)
+
+  const agentCtx = _agentCtx.get(agentName)
+  if (!agentCtx) {
+    bgLog.warn(`Trigger for "${agentName}" — no ctx in memory, falling back to full restart`)
+    await startAgent(agentName)
+    return
+  }
+
+  bgLog.info(`Trigger: running "${agentName}" in sandbox (in-process)`)
+  runInSandbox({
+    agentName,
+    agentVersion: agent.version,
+    agentCtx,
+  }).then(() => {
+    bgLog.info(`Trigger: "${agentName}" sandbox run completed`)
+  }).catch((e: unknown) => {
+    bgLog.error(`Trigger: "${agentName}" sandbox run failed:`, e instanceof Error ? e.message : String(e))
+  })
+}
+
+// ─── In-process config update ─────────────────────────────────────────────────
+
+/**
+ * Apply new config to the running agent ctx and re-run in sandbox.
+ * Mirrors what runtime-chrome.ts does on WS config_updated message.
+ */
+export async function applyConfigUpdate(
+  agentName: string,
+  config: Record<string, unknown>
+): Promise<void> {
+  const agentCtx = _agentCtx.get(agentName)
+  if (!agentCtx) {
+    bgLog.warn(`config_updated for "${agentName}" — no ctx in memory, skipping in-process update`)
+    return
+  }
+
+  // update ctx in-memory — same as runtime-chrome.ts onWsMessage config_updated
+  agentCtx.config = config as Context["config"]
+  if ((config as { env?: Record<string, unknown> }).env) {
+    agentCtx.env = (config as { env: Record<string, unknown> }).env
+  }
+  _agentCtx.set(agentName, agentCtx)
+
+  bgLog.info(`config_updated applied for "${agentName}" — ctx updated in memory`)
 }

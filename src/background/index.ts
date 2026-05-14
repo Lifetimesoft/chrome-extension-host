@@ -10,8 +10,8 @@
 
 import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
-import { listInstalledAgents, installAgent, uninstallAgent } from "../services/agent.service"
-import { startAgent, stopAgent, isAgentRunning } from "../services/runtime.service"
+import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
+import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate } from "../services/runtime.service"
 import { handleOffscreenMessage } from "../services/sandbox.service"
 import { getTokens } from "../storage/storage"
 
@@ -246,6 +246,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return undefined
   }
 
+  // ── Heartbeat: trigger from DO (scheduler type: none) — run agent in sandbox in-process ──
+  if (message.type === "heartbeat_trigger") {
+    const { agentName } = message as { agentName: string }
+    bgLog.info(`Trigger received for "${agentName}" — running in sandbox`)
+    triggerAgent(agentName).catch((e: unknown) => {
+      bgLog.error(`Failed to trigger agent "${agentName}":`, e instanceof Error ? e.message : String(e))
+    })
+    sendResponse({ success: true })
+    return undefined
+  }
+
+  // ── Heartbeat: config updated from DO — apply in-process and persist ──
+  if (message.type === "heartbeat_config_updated") {
+    const { agentName, config } = message as { agentName: string; config: Record<string, unknown> }
+    bgLog.info(`Config updated for "${agentName}" — applying in-process`)
+    const doUpdate = async () => {
+      await updateAgentConfig(agentName, config)
+      await applyConfigUpdate(agentName, config)
+    }
+    doUpdate().catch((e: unknown) => {
+      bgLog.error(`Failed to apply config update for "${agentName}":`, e instanceof Error ? e.message : String(e))
+    })
+    sendResponse({ success: true })
+    return undefined
+  }
+
   // ── AI proxy: sandbox agent calls ai.chat/image/video via offscreen → background ──
   if (message.type === "agent_ai_call") {
     const { agentName, method, args } = message as {
@@ -265,7 +291,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         method:  "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization:  `Bearer ${accessToken}`,
+          Authorization:  accessToken,
         },
         body: JSON.stringify({ ...req, agent_name: agentName }),
       })

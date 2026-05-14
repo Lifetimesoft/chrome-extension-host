@@ -69,7 +69,7 @@ async function fetchAgentBundle(name: string, version: string): Promise<string> 
     method:  "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization:  `Bearer ${accessToken}`,
+      Authorization:  accessToken,
     },
     body: JSON.stringify({ name, version }),
   })
