@@ -18,10 +18,11 @@ import {
 } from "../storage/storage"
 import { apiCall } from "../utils/api-helper"
 import { bgLog } from "../utils/logger"
+import { API_URLS, AGENT_STATUS } from "../constants"
+import type { AgentInfoResponse } from "../types"
+import { retry } from "../utils/common"
 
 export type { InstalledAgent }
-
-const API_BASE = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── List ─────────────────────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ export async function installAgent(
     ? `?name=${encodeURIComponent(name)}&host=chrome`
     : `?name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}&host=chrome`
 
-  const res = await apiCall(`${API_BASE}/agents/info${query}`)
+  const res = await retry(() => apiCall(`${API_URLS.AGENT_BASE}/agents/info${query}`), 3, 1000)
 
   if (res.status === 404) {
     const body = await res.json() as { message?: string }
@@ -63,16 +64,7 @@ export async function installAgent(
     throw new Error(`Registry check failed (${res.status})`)
   }
 
-  const info = await res.json() as {
-    success:      boolean
-    name:         string
-    version:      string
-    latest_version: string
-    description:  string
-    capabilities: unknown
-    compatible:   boolean
-    missing:      string[]
-  }
+  const info = await res.json() as AgentInfoResponse
 
   if (!info.success) {
     throw new Error(`Agent "${name}" not found in registry`)
@@ -102,7 +94,7 @@ export async function installAgent(
   const agent: InstalledAgent = {
     name,
     version:      resolvedVersion,
-    status:       "stopped",
+    status:       AGENT_STATUS.STOPPED,
     installed_at: Date.now(),
     config,
     // preserve existing instance_id if upgrading
@@ -131,7 +123,7 @@ export async function uninstallAgent(name: string): Promise<void> {
   // Notify SaaS to delete instance from D1 and clear DO storage — mirrors lifectl rm
   if (existing.run_id) {
     try {
-      const res = await apiCall(`${API_BASE}/agents/instance`, {
+      const res = await apiCall(`${API_URLS.AGENT_BASE}/agents/instance`, {
         method:  "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ run_id: existing.run_id }),

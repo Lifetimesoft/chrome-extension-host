@@ -18,9 +18,11 @@
 import { bgLog } from "../utils/logger"
 import { createLogger } from "../utils/logger"
 import { getTokens } from "../storage/storage"
+import { API_URLS } from "../constants"
+import type { SandboxRunOptions, PendingRun } from "../types"
+import { generateJobId, formatDate } from "../utils/common"
 
 const OFFSCREEN_URL = chrome.runtime.getURL("offscreen/index.html")
-const API_BASE      = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── Offscreen document lifecycle ────────────────────────────────────────────
 
@@ -83,7 +85,7 @@ async function fetchAgentBundle(name: string, version: string): Promise<string> 
   if (!accessToken) throw new Error("Not logged in — cannot fetch agent bundle")
 
   // Pull the tar.gz from the registry API
-  const res = await fetch(`${API_BASE}/agents/pull`, {
+  const res = await fetch(`${API_URLS.AGENT_BASE}/agents/pull`, {
     method:  "POST",
     headers: {
       "Content-Type": "application/json",
@@ -191,10 +193,7 @@ export function clearBundleCache(name?: string, version?: string): void {
 // ─── Pending run callbacks ────────────────────────────────────────────────────
 // requestId → { resolve, reject }
 
-const _pendingRuns = new Map<string, {
-  resolve: () => void
-  reject:  (err: Error) => void
-}>()
+const _pendingRuns = new Map<string, PendingRun>()
 
 let _runSeq = 0
 function nextRunId(): string { return `run_sb_${++_runSeq}` }
@@ -245,22 +244,6 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export interface SandboxRunOptions {
-  agentName:   string
-  agentVersion: string
-  agentCtx:    object
-}
-
-// Generate job ID like agent-sdk
-function generateJobId(): string {
-  return Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
-}
-
-// Format date like agent-sdk
-function fmtDate(): string {
-  return new Date().toISOString().replace("T", " ").slice(0, 19)
-}
-
 /**
  * Run an agent inside the sandboxed iframe.
  * Fetches the bundle from the registry if not cached.
@@ -286,8 +269,8 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
         resolve()
       }, 
       reject: (e) => {
-        bgLog.error(`[${fmtDate()}] [job:${jobId}] [agent:error] job failed:`, e.message)
-        bgLog.info(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
+        bgLog.error(`[${formatDate()}] [job:${jobId}] [agent:error] job failed:`, e.message)
+        bgLog.info(`[${formatDate()}] [job:${jobId}] [agent:info] ----------`)
         reject(e)
       }
     })
@@ -296,8 +279,8 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
     const timer = setTimeout(() => {
       if (_pendingRuns.has(requestId)) {
         _pendingRuns.delete(requestId)
-        bgLog.error(`[${fmtDate()}] [job:${jobId}] [agent:error] job timed out after 10 minutes`)
-        bgLog.info(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
+        bgLog.error(`[${formatDate()}] [job:${jobId}] [agent:error] job timed out after 10 minutes`)
+        bgLog.info(`[${formatDate()}] [job:${jobId}] [agent:info] ----------`)
         reject(new Error(`Agent "${agentName}" run timed out after 10 minutes`))
       }
     }, 10 * 60 * 1_000)

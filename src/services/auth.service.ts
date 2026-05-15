@@ -11,47 +11,28 @@
 
 import { getTokens, saveTokens, clearTokens } from "../storage/storage"
 import { bgLog } from "../utils/logger"
-
-const AUTH_URL = "https://app.lifetimesoft.com/ex-api"
-
-const POLL_INTERVAL_MS = 3_000
-const POLL_TIMEOUT_MS  = 5 * 60 * 1_000
+import { API_URLS, TIMING, STORAGE_KEYS, ALARMS } from "../constants"
+import type { LoginState, TokenRefreshResponse } from "../types"
+import { isTokenExpired } from "../utils/common"
 
 // ─── Login state persisted to storage ────────────────────────────────────────
 // SW can be terminated during polling — persist device_code so we can resume
 
-const LOGIN_STATE_KEY = "lts_login_pending"
-
-interface LoginState {
-  device_code: string
-  deadline: number  // unix ms
-}
-
 async function saveLoginState(state: LoginState): Promise<void> {
-  await chrome.storage.local.set({ [LOGIN_STATE_KEY]: state })
+  await chrome.storage.local.set({ [STORAGE_KEYS.LOGIN_STATE]: state })
 }
 
 async function getLoginState(): Promise<LoginState | null> {
-  const stored = await chrome.storage.local.get(LOGIN_STATE_KEY)
-  return (stored[LOGIN_STATE_KEY] as LoginState | undefined) ?? null
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.LOGIN_STATE)
+  return (stored[STORAGE_KEYS.LOGIN_STATE] as LoginState | undefined) ?? null
 }
 
 async function clearLoginState(): Promise<void> {
-  await chrome.storage.local.remove(LOGIN_STATE_KEY)
+  await chrome.storage.local.remove(STORAGE_KEYS.LOGIN_STATE)
 }
 
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
-
-function isTokenExpired(token: string): boolean {
-  try {
-    const parts = token.split(".")
-    if (parts.length !== 3) return true
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")))
-    return Math.floor(Date.now() / 1000) >= (payload.exp as number)
-  } catch {
-    return true
-  }
-}
+// (moved to utils/common.ts)
 
 // ─── Login flow ───────────────────────────────────────────────────────────────
 
@@ -64,7 +45,7 @@ export async function login(): Promise<void> {
   const signal = _loginAbort.signal
 
   // 1. Init — get device_code and login_url
-  const initRes = await fetch(`${AUTH_URL}/cli-login/init`, {
+  const initRes = await fetch(`${API_URLS.AUTH_BASE}/cli-login/init`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ platform: "chrome" }),
@@ -84,7 +65,7 @@ export async function login(): Promise<void> {
   }
 
   const { device_code, login_url } = init
-  const deadline = Date.now() + POLL_TIMEOUT_MS
+  const deadline = Date.now() + TIMING.POLL_TIMEOUT
 
   // 2. Persist login state so SW can resume polling after being terminated
   await saveLoginState({ device_code, deadline })
@@ -110,9 +91,9 @@ async function pollForToken(
 
     // Use chrome.alarms to schedule next poll — keeps SW alive
     await new Promise<void>(resolve => {
-      chrome.alarms.create("lts_login_poll", { delayInMinutes: POLL_INTERVAL_MS / 60_000 })
+      chrome.alarms.create(ALARMS.LOGIN_POLL, { delayInMinutes: TIMING.POLL_INTERVAL / 60_000 })
       chrome.alarms.onAlarm.addListener(function handler(alarm) {
-        if (alarm.name === "lts_login_poll") {
+        if (alarm.name === ALARMS.LOGIN_POLL) {
           chrome.alarms.onAlarm.removeListener(handler)
           resolve()
         }
@@ -124,7 +105,7 @@ async function pollForToken(
       throw new Error("Login cancelled")
     }
 
-    const pollRes = await fetch(`${AUTH_URL}/cli-login/poll?device_code=${encodeURIComponent(device_code)}`)
+    const pollRes = await fetch(`${API_URLS.AUTH_BASE}/cli-login/poll?device_code=${encodeURIComponent(device_code)}`)
     if (!pollRes.ok) continue
 
     const poll = await pollRes.json() as {
@@ -185,7 +166,7 @@ export async function logout(): Promise<void> {
 
   // Notify SaaS to invalidate the session — best-effort
   if (refreshToken) {
-    await fetch(`${AUTH_URL}/cli-logout`, {
+    await fetch(`${API_URLS.AUTH_BASE}/cli-logout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -212,7 +193,7 @@ export async function refreshTokenIfNeeded(): Promise<boolean> {
   }
 
   try {
-    const res = await fetch(`${AUTH_URL}/cli-login/refresh`, {
+    const res = await fetch(`${API_URLS.AUTH_BASE}/cli-login/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }),
@@ -223,11 +204,7 @@ export async function refreshTokenIfNeeded(): Promise<boolean> {
       return false
     }
 
-    const data = await res.json() as {
-      success: boolean
-      access_token?: string
-      refresh_token?: string
-    }
+    const data = await res.json() as TokenRefreshResponse
 
     if (!data.success || !data.access_token) {
       bgLog.warn("Token refresh rejected by server")

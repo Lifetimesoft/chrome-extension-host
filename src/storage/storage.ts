@@ -5,42 +5,15 @@
  * All keys use the `lts_` prefix.
  */
 
-export const KEYS = {
-  ACCESS_TOKEN:     "lts_access_token",
-  REFRESH_TOKEN:    "lts_refresh_token",
-  INSTALLED_AGENTS: "lts_installed_agents",
-  // Per-agent log key — call agentLogKey(name) to get the full key
-  AGENT_LOGS_PREFIX: "lts_logs_",
-  // Per-agent ctx key — call agentCtxKey(name) to get the full key
-  // Equivalent to AGENT_CTX env var in Node.js runtime (lifectl)
-  AGENT_CTX_PREFIX: "lts_ctx_",
-} as const
+import { STORAGE_KEYS } from "../constants"
+import { InstalledAgent, TokenPair } from "../types"
+import { agentLogKey, agentCtxKey } from "../utils/common"
 
-export function agentLogKey(agentName: string): string {
-  return `${KEYS.AGENT_LOGS_PREFIX}${agentName}`
-}
+export const KEYS = STORAGE_KEYS
 
-export function agentCtxKey(agentName: string): string {
-  return `${KEYS.AGENT_CTX_PREFIX}${agentName}`
-}
+export { agentLogKey, agentCtxKey }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface InstalledAgent {
-  name:         string
-  version:      string
-  status:       "running" | "stopped" | "error"
-  instance_id?: number
-  run_id?:      string
-  ws_url?:      string   // persisted so keepalive alarm can reconnect WS after SW restart
-  installed_at: number
-  config:       Record<string, unknown>  // env overrides
-}
-
-export interface TokenPair {
-  accessToken:  string
-  refreshToken: string
-}
+export type { InstalledAgent, TokenPair }
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 

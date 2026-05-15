@@ -11,12 +11,13 @@
 
 import { getTokens, saveTokens } from "../storage/storage"
 import { bgLog } from "./logger"
-
-const AUTH_URL = "https://app.lifetimesoft.com/ex-api"
+import { API_URLS } from "../constants"
+import { AuthError } from "../types"
+import { retry } from "./common"
 
 export async function apiCall(url: string, options: RequestInit = {}): Promise<Response> {
   const { accessToken, refreshToken } = await getTokens()
-  if (!accessToken) throw new Error("Not logged in — please authenticate first")
+  if (!accessToken) throw new AuthError("Not logged in — please authenticate first")
 
   // First attempt with current token
   const response = await fetch(url, {
@@ -45,14 +46,14 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
 
   if (needsRefresh) {
     if (!refreshToken) {
-      throw new Error("Session expired — please log in again")
+      throw new AuthError("Session expired — please log in again")
     }
 
     try {
       bgLog.info("Token expired, refreshing...")
       
       // Refresh token
-      const refreshRes = await fetch(`${AUTH_URL}/cli-login/refresh`, {
+      const refreshRes = await fetch(`${API_URLS.AUTH_BASE}/cli-login/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -62,7 +63,7 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
       })
 
       if (!refreshRes.ok) {
-        throw new Error("Token refresh failed")
+        throw new AuthError("Token refresh failed")
       }
 
       const refreshData = await refreshRes.json() as {
@@ -73,7 +74,7 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
       }
 
       if (!refreshData.success || !refreshData.access_token) {
-        throw new Error(refreshData.message || "Token refresh rejected by server")
+        throw new AuthError(refreshData.message || "Token refresh rejected by server")
       }
 
       // Save new tokens
@@ -90,7 +91,7 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
       })
     } catch (e) {
       bgLog.error("Token refresh error:", e instanceof Error ? e.message : String(e))
-      throw new Error("Authentication failed — please log in again")
+      throw new AuthError("Authentication failed — please log in again")
     }
   }
 

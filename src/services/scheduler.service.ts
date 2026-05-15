@@ -10,11 +10,8 @@
 import { bgLog } from "../utils/logger"
 import { triggerAgent } from "./runtime.service"
 import { getInstalledAgent } from "../storage/storage"
-
-interface SchedulerConfig {
-  type: "none" | "interval" | "cron"
-  value?: number | string
-}
+import { schedulerAlarmName, agentNameFromAlarm } from "../utils/common"
+import type { SchedulerConfig } from "../types"
 
 // Track active schedulers per agent
 const _activeSchedulers = new Map<string, { config: SchedulerConfig; alarmName: string }>()
@@ -34,7 +31,7 @@ export function startScheduler(agentName: string, config: SchedulerConfig): void
     return
   }
 
-  const alarmName = `lts_scheduler_${agentName}`
+  const alarmName = schedulerAlarmName(agentName)
   _activeSchedulers.set(agentName, { config, alarmName })
 
   if (config.type === "interval") {
@@ -95,9 +92,8 @@ export function updateScheduler(agentName: string, config: SchedulerConfig): voi
  * Handle chrome.alarms.onAlarm events
  */
 export function handleAlarm(alarm: chrome.alarms.Alarm): void {
-  if (!alarm.name.startsWith("lts_scheduler_")) return
-
-  const agentName = alarm.name.replace("lts_scheduler_", "")
+  const agentName = agentNameFromAlarm(alarm.name)
+  if (!agentName) return
   const scheduler = _activeSchedulers.get(agentName)
   
   if (!scheduler) {

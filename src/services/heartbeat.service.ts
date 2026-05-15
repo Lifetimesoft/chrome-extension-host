@@ -18,21 +18,11 @@ import { bgLog } from "../utils/logger"
 import { getTokens } from "../storage/storage"
 import { refreshTokenIfNeeded } from "./auth.service"
 import { triggerAgent, applyConfigUpdate } from "./runtime.service"
-
-const DEFAULT_WS_URL      = "wss://app.lifetimesoft.com/cli/ai-account-management/agents/ws"
-const HEARTBEAT_INTERVAL  = 20_000   // 20s — matches Node.js runtime
-const RECONNECT_DELAY     = 5_000    // 5s
+import { API_URLS, TIMING } from "../constants"
+import type { HeartbeatConnection } from "../types"
 
 // ─── Connection registry ──────────────────────────────────────────────────────
 // run_id → HeartbeatConnection
-
-interface HeartbeatConnection {
-  ws:              WebSocket | null
-  heartbeatTimer:  ReturnType<typeof setInterval> | null
-  stopped:         boolean
-  agentName:       string
-  wsUrl:           string
-}
 
 const _connections = new Map<string, HeartbeatConnection>()
 
@@ -49,7 +39,7 @@ export function startHeartbeat(agentName: string, runId: string, wsUrl?: string)
     return Promise.resolve()
   }
 
-  const resolvedWsUrl = wsUrl ?? DEFAULT_WS_URL
+  const resolvedWsUrl = wsUrl ?? API_URLS.WS_DEFAULT
   bgLog.info(`Starting heartbeat for "${agentName}" run_id=${runId} ws=${resolvedWsUrl}`)
 
   const conn: HeartbeatConnection = {
@@ -102,17 +92,17 @@ async function connectOnce(
   // Refresh token if needed before creating WebSocket
   const tokenRefreshed = await refreshTokenIfNeeded()
   if (!tokenRefreshed) {
-    bgLog.warn(`Heartbeat for "${conn.agentName}": token refresh failed — retrying in ${RECONNECT_DELAY}ms`)
+    bgLog.warn(`Heartbeat for "${conn.agentName}": token refresh failed — retrying in ${TIMING.RECONNECT_DELAY}ms`)
     onReady?.()
-    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
+    setTimeout(() => { void connectOnce(runId, conn, null) }, TIMING.RECONNECT_DELAY)
     return
   }
 
   const { accessToken } = await getTokens()
   if (!accessToken) {
-    bgLog.warn(`Heartbeat for "${conn.agentName}": no access token — retrying in ${RECONNECT_DELAY}ms`)
+    bgLog.warn(`Heartbeat for "${conn.agentName}": no access token — retrying in ${TIMING.RECONNECT_DELAY}ms`)
     onReady?.()   // resolve anyway so startAgent() isn't blocked forever
-    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
+    setTimeout(() => { void connectOnce(runId, conn, null) }, TIMING.RECONNECT_DELAY)
     return
   }
 
@@ -124,7 +114,7 @@ async function connectOnce(
   } catch (e) {
     bgLog.error(`Heartbeat for "${conn.agentName}": failed to create WebSocket:`, String(e))
     onReady?.()
-    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
+    setTimeout(() => { void connectOnce(runId, conn, null) }, TIMING.RECONNECT_DELAY)
     return
   }
 
@@ -143,7 +133,7 @@ async function connectOnce(
           timestamp: Math.floor(Date.now() / 1000),
         }))
       }
-    }, HEARTBEAT_INTERVAL)
+    }, TIMING.HEARTBEAT_INTERVAL)
   })
 
   ws.addEventListener("message", (event: MessageEvent) => {
@@ -155,8 +145,8 @@ async function connectOnce(
     // If WS closed before open fired, resolve so caller isn't blocked
     onReady?.()
     if (conn.stopped) return
-    bgLog.info(`Heartbeat closed for "${conn.agentName}" (${event.code}) — reconnecting in ${RECONNECT_DELAY}ms`)
-    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
+    bgLog.info(`Heartbeat closed for "${conn.agentName}" (${event.code}) — reconnecting in ${TIMING.RECONNECT_DELAY}ms`)
+    setTimeout(() => { void connectOnce(runId, conn, null) }, TIMING.RECONNECT_DELAY)
   })
 
   ws.addEventListener("error", () => {

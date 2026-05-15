@@ -11,12 +11,12 @@
 import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
 import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
-import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning } from "../services/runtime.service"
+import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning, stopAllAgents } from "../services/runtime.service"
 import { handleOffscreenMessage, ensureOffscreenAlive } from "../services/sandbox.service"
 import { handleAlarm } from "../services/scheduler.service"
 import { getTokens } from "../storage/storage"
-
-const APP_BASE = "https://app.lifetimesoft.com/cli/ai-account-management"
+import { API_URLS, MESSAGE_TYPES, ALARMS, AGENT_STATUS } from "../constants"
+import type { BackgroundMessage } from "../types"
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ async function bootstrap(): Promise<void> {
     // Only restore agents that are marked running AND not already running in memory.
     // This prevents double-start when SW wakes up due to an incoming message
     // (e.g. heartbeat_trigger) while a previous bootstrap already started the agent.
-    const toRestore = agents.filter(a => a.status === "running" && !isAgentRunning(a.name))
+    const toRestore = agents.filter(a => a.status === AGENT_STATUS.RUNNING && !isAgentRunning(a.name))
 
     if (toRestore.length === 0) {
       bgLog.info("No previously running agents to restore")
@@ -77,8 +77,10 @@ async function bootstrap(): Promise<void> {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (typeof message !== "object" || message === null) return undefined
 
+  const msg = message as BackgroundMessage
+
   // ── Auth: login ──
-  if (message.type === "auth_login") {
+  if (msg.type === MESSAGE_TYPES.AUTH_LOGIN) {
     login()
       .then(() => sendResponse({ success: true }))
       .catch((e: unknown) => sendResponse({
@@ -89,14 +91,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Auth: cancel login ──
-  if (message.type === "auth_login_cancel") {
+  if (msg.type === MESSAGE_TYPES.AUTH_LOGIN_CANCEL) {
     cancelLogin()
     sendResponse({ success: true })
     return undefined
   }
 
   // ── Auth: logout ──
-  if (message.type === "auth_logout") {
+  if (msg.type === MESSAGE_TYPES.AUTH_LOGOUT) {
     const doLogout = async () => {
       // Stop all running agents before logging out
       const agents = await listInstalledAgents()
@@ -115,8 +117,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Agent: start ──
-  if (message.type === "agent_start") {
-    const { name } = message as { name: string }
+  if (msg.type === MESSAGE_TYPES.AGENT_START) {
+    const { name } = msg as BackgroundMessage & { name: string }
     startAgent(name)
       .then(() => sendResponse({ success: true }))
       .catch((e: unknown) => sendResponse({
@@ -127,8 +129,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Agent: stop ──
-  if (message.type === "agent_stop") {
-    const { name } = message as { name: string }
+  if (msg.type === MESSAGE_TYPES.AGENT_STOP) {
+    const { name } = msg as BackgroundMessage & { name: string }
     stopAgent(name)
       .then(() => sendResponse({ success: true }))
       .catch((e: unknown) => sendResponse({
@@ -139,8 +141,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Agent: install ──
-  if (message.type === "agent_install") {
-    const { name, version, config } = message as {
+  if (msg.type === MESSAGE_TYPES.AGENT_INSTALL) {
+    const { name, version, config } = msg as BackgroundMessage & {
       name: string
       version: string
       config?: Record<string, unknown>
@@ -155,8 +157,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Agent: uninstall ──
-  if (message.type === "agent_uninstall") {
-    const { name } = message as { name: string }
+  if (msg.type === MESSAGE_TYPES.AGENT_UNINSTALL) {
+    const { name } = msg as BackgroundMessage & { name: string }
     const doUninstall = async () => {
       // Stop runtime if running in memory
       if (isAgentRunning(name)) {
@@ -178,8 +180,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Runtime: disconnect (stop without logout) ──
-  if (message.type === "runtime_disconnect") {
-    const { name } = message as { name?: string }
+  if (msg.type === MESSAGE_TYPES.RUNTIME_DISCONNECT) {
+    const { name } = msg as { name?: string }
     const doDisconnect = async () => {
       if (name) {
         await stopAgent(name)
@@ -200,15 +202,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Runtime: reconnect (restart without re-login) ──
-  if (message.type === "runtime_reconnect") {
-    const { name } = message as { name?: string }
+  if (msg.type === MESSAGE_TYPES.RUNTIME_RECONNECT) {
+    const { name } = msg as { name?: string }
     const doReconnect = async () => {
       if (name) {
         await startAgent(name)
       } else {
         // Restart all installed agents that were running
         const agents = await listInstalledAgents()
-        for (const agent of agents.filter(a => a.status === "running")) {
+        for (const agent of agents.filter(a => a.status === AGENT_STATUS.RUNNING)) {
           await startAgent(agent.name).catch((e: unknown) => {
             bgLog.error(`Failed to reconnect agent "${agent.name}":`, e instanceof Error ? e.message : String(e))
           })
@@ -225,14 +227,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Status: get current state ──
-  if (message.type === "get_status") {
+  if (msg.type === MESSAGE_TYPES.GET_STATUS) {
     const getStatus = async () => {
       const loggedIn = await isLoggedIn()
       const agents = await listInstalledAgents()
       // Sync in-memory running state with stored state
       const agentsWithLiveStatus = agents.map(a => ({
         ...a,
-        status: isAgentRunning(a.name) ? "running" as const : a.status,
+        status: isAgentRunning(a.name) ? AGENT_STATUS.RUNNING : a.status,
       }))
       return { loggedIn, agents: agentsWithLiveStatus }
     }
@@ -243,7 +245,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Navigation: open dashboard ──
-  if (message.type === "open_dashboard") {
+  if (msg.type === MESSAGE_TYPES.OPEN_DASHBOARD) {
     chrome.tabs.create({ url: chrome.runtime.getURL("dashboard/index.html") })
       .then(() => sendResponse({ success: true }))
       .catch(() => sendResponse({ success: false }))
@@ -251,8 +253,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Navigation: open logs ──
-  if (message.type === "open_logs") {
-    const { agent } = message as { agent?: string }
+  if (msg.type === MESSAGE_TYPES.OPEN_LOGS) {
+    const { agent } = msg as { agent?: string }
     const url = chrome.runtime.getURL("logs/index.html") + (agent ? `?agent=${encodeURIComponent(agent)}` : "")
     chrome.tabs.create({ url })
       .then(() => sendResponse({ success: true }))
@@ -262,25 +264,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // ── Offscreen: relay messages from offscreen document (sandbox logs/done/error) ──
   if (
-    message.type === "offscreen_log"   ||
-    message.type === "offscreen_done"  ||
-    message.type === "offscreen_error"
+    msg.type === MESSAGE_TYPES.OFFSCREEN_LOG   ||
+    msg.type === MESSAGE_TYPES.OFFSCREEN_DONE  ||
+    msg.type === MESSAGE_TYPES.OFFSCREEN_ERROR
   ) {
-    handleOffscreenMessage(message as Record<string, unknown>)
+    handleOffscreenMessage(msg as Record<string, unknown>)
     sendResponse({ success: true })
     return undefined
   }
 
   // ── Offscreen: keepalive ping — resets SW idle timer so WS stays connected ──
-  if (message.type === "offscreen_keepalive") {
+  if (msg.type === MESSAGE_TYPES.OFFSCREEN_KEEPALIVE) {
     // No-op — receiving this message is enough to reset the SW idle timer
     sendResponse({ success: true })
     return undefined
   }
 
   // ── Heartbeat: trigger from DO (scheduler type: none) — run agent in sandbox in-process ──
-  if (message.type === "heartbeat_trigger") {
-    const { agentName } = message as { agentName: string }
+  if (msg.type === MESSAGE_TYPES.HEARTBEAT_TRIGGER) {
+    const { agentName } = msg as BackgroundMessage & { agentName: string }
     bgLog.info(`Trigger received for "${agentName}" — running in sandbox`)
     triggerAgent(agentName).catch((e: unknown) => {
       bgLog.error(`Failed to trigger agent "${agentName}":`, e instanceof Error ? e.message : String(e))
@@ -290,8 +292,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── Heartbeat: config updated from DO — apply in-process and persist ──
-  if (message.type === "heartbeat_config_updated") {
-    const { agentName, config } = message as { agentName: string; config: Record<string, unknown> }
+  if (msg.type === MESSAGE_TYPES.HEARTBEAT_CONFIG_UPDATED) {
+    const { agentName, config } = msg as BackgroundMessage & { agentName: string; config: Record<string, unknown> }
     bgLog.info(`Config updated for "${agentName}" — applying in-process`)
     const doUpdate = async () => {
       await updateAgentConfig(agentName, config)
@@ -305,8 +307,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   // ── AI proxy: sandbox agent calls ai.chat/image/video via offscreen → background ──
-  if (message.type === "agent_ai_call") {
-    const { agentName, method, args } = message as {
+  if (msg.type === MESSAGE_TYPES.AGENT_AI_CALL) {
+    const { agentName, method, args } = msg as BackgroundMessage & {
       agentName: string
       method:    string
       args:      unknown[]
@@ -317,7 +319,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!accessToken) throw new Error("Not logged in")
 
       const req = (args[0] ?? {}) as Record<string, unknown>
-      const aiUrl = `${APP_BASE}/ai/${method}`
+      const aiUrl = `${API_URLS.AGENT_BASE}/ai/${method}`
 
       const res = await fetch(aiUrl, {
         method:  "POST",
@@ -352,20 +354,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
-const KEEPALIVE_ALARM = "lts_keepalive"
-
 // Bootstrap on install/update — also set up the keepalive alarm
 chrome.runtime.onInstalled.addListener(() => {
   bgLog.info("Extension installed/updated — bootstrapping host...")
   // Keepalive alarm: fires every 1 minute (Chrome MV3 minimum) to wake the SW
   // and reconnect WebSocket heartbeats before the DO marks agents OFFLINE (3min timeout)
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 })
+  chrome.alarms.create(ALARMS.KEEPALIVE, { periodInMinutes: 1 })
   void bootstrap()
+})
+
+// Graceful shutdown on service worker suspend
+chrome.runtime.onSuspend.addListener(() => {
+  bgLog.info("Service worker suspending — stopping all agents...")
+  // Best-effort cleanup before SW is terminated
+  stopAllAgents().catch(() => { /* best-effort */ })
 })
 
 // Keepalive alarm handler — reconnect any dropped heartbeat WS connections
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === KEEPALIVE_ALARM) {
+  if (alarm.name === ALARMS.KEEPALIVE) {
     void reconnectHeartbeats()
   } else {
     // Handle scheduler alarms

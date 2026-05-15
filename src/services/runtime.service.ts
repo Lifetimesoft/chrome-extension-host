@@ -29,8 +29,9 @@ import { bgLog } from "../utils/logger"
 import { runInSandbox, stopInSandbox, notifyOffscreenKeepaliveStart, notifyOffscreenKeepaliveStop } from "./sandbox.service"
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.service"
 import { startScheduler, stopScheduler } from "./scheduler.service"
-
-const BASE_URL = "https://app.lifetimesoft.com/cli/ai-account-management/agents"
+import { API_URLS, AGENT_STATUS } from "../constants"
+import { retry } from "../utils/common"
+import { AgentError } from "../types"
 
 // ─── Runtime registry ─────────────────────────────────────────────────────────
 // Track which agents are currently running (in sandbox)
@@ -54,7 +55,7 @@ async function registerRun(
   agentName: string,
   agentVersion: string
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta">; instance_id: number }> {
-  const res = await apiCall(`${BASE_URL}/run`, {
+  const res = await apiCall(`${API_URLS.AGENT_BASE}/agents/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -89,7 +90,7 @@ async function registerRun(
 async function restartRun(
   instanceId: number
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta"> }> {
-  const res = await apiCall(`${BASE_URL}/restart`, {
+  const res = await apiCall(`${API_URLS.AGENT_BASE}/agents/restart`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -128,7 +129,7 @@ export async function startAgent(agentName: string): Promise<void> {
   await stopAgent(agentName)
 
   const agent = await getInstalledAgent(agentName)
-  if (!agent) throw new Error(`Agent "${agentName}" is not installed`)
+  if (!agent) throw new AgentError(`Agent "${agentName}" is not installed`)
 
   bgLog.info(`Starting agent "${agentName}" v${agent.version} via sandbox...`)
 
@@ -139,13 +140,13 @@ export async function startAgent(agentName: string): Promise<void> {
     if (instanceId !== undefined) {
       bgLog.info(`Restarting existing instance ${instanceId} for "${agentName}"...`)
       try {
-        const { ctx } = await restartRun(instanceId)
+        const { ctx } = await retry(() => restartRun(instanceId!), 2, 1000)
         agentCtx = ctx
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         if (msg === "INSTANCE_EXPIRED") {
           bgLog.info(`Instance expired for "${agentName}" — registering new run...`)
-          const { ctx, instance_id } = await registerRun(agentName, agent.version)
+          const { ctx, instance_id } = await retry(() => registerRun(agentName, agent.version), 3, 1000)
           agentCtx = ctx
           instanceId = instance_id
         } else {
@@ -154,15 +155,15 @@ export async function startAgent(agentName: string): Promise<void> {
       }
     } else {
       bgLog.info(`Registering new run for "${agentName}"...`)
-      const { ctx, instance_id } = await registerRun(agentName, agent.version)
+      const { ctx, instance_id } = await retry(() => registerRun(agentName, agent.version), 3, 1000)
       agentCtx = ctx
       instanceId = instance_id
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     bgLog.error(`Failed to get ctx for "${agentName}":`, msg)
-    await updateAgentStatus(agentName, "error")
-    throw e
+    await updateAgentStatus(agentName, AGENT_STATUS.ERROR)
+    throw new AgentError(`Failed to start agent "${agentName}": ${msg}`)
   }
 
   // Update stored metadata — persist ws_url so keepalive alarm can reconnect after SW restart
@@ -171,7 +172,7 @@ export async function startAgent(agentName: string): Promise<void> {
     instance_id: instanceId,
     run_id:      agentCtx.meta.run_id,
     ws_url:      agentCtx.meta.runtime?.ws_url,
-    status:      "running",
+    status:      AGENT_STATUS.RUNNING,
   })
 
   // Persist ctx to chrome.storage — equivalent to AGENT_CTX env var in Node.js runtime.
@@ -201,6 +202,10 @@ export async function startAgent(agentName: string): Promise<void> {
   const schedulerConfig = agentCtx.config?.scheduler ?? { type: "none" }
   startScheduler(agentName, schedulerConfig)
 
+  // For scheduler type "none", run once and keep status as "running" for manual triggers
+  // For interval/cron, also keep status as "running" since scheduler will trigger repeatedly
+  // Only set to "stopped" when explicitly stopped by user or on error
+
   // Run agent in sandbox — fire and forget (scheduler handles repeats via alarms)
   runInSandbox({
     agentName,
@@ -208,13 +213,8 @@ export async function startAgent(agentName: string): Promise<void> {
     agentCtx,
   }).then(() => {
     bgLog.info(`Agent "${agentName}" sandbox run completed`)
-    // Only mark stopped if not already stopped by stopAgent()
-    if (_running.has(agentName)) {
-      _running.delete(agentName)
-      _agentCtx.delete(agentName)
-      if (_running.size === 0) notifyOffscreenKeepaliveStop()
-      updateAgentStatus(agentName, "stopped").catch(() => {})
-    }
+    // Don't change status to "stopped" after successful run
+    // Agent remains "running" until explicitly stopped
   }).catch((e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e)
     bgLog.error(`Agent "${agentName}" sandbox run failed:`, msg)
@@ -222,7 +222,7 @@ export async function startAgent(agentName: string): Promise<void> {
       _running.delete(agentName)
       _agentCtx.delete(agentName)
       if (_running.size === 0) notifyOffscreenKeepaliveStop()
-      updateAgentStatus(agentName, "error").catch(() => {})
+      updateAgentStatus(agentName, AGENT_STATUS.ERROR).catch(() => {})
     }
   })
 
@@ -248,7 +248,7 @@ export async function stopAgent(agentName: string): Promise<void> {
   }
 
   await stopInSandbox(agentName)
-  await updateAgentStatus(agentName, "stopped")
+  await updateAgentStatus(agentName, AGENT_STATUS.STOPPED)
   await removeAgentCtx(agentName)
 
   // Stop keepalive ping when last agent stops
@@ -271,9 +271,9 @@ export function isAgentRunning(agentName: string): boolean {
 }
 
 export async function getStatus(agentName: string): Promise<"running" | "stopped" | "error"> {
-  if (_running.has(agentName)) return "running"
+  if (_running.has(agentName)) return AGENT_STATUS.RUNNING
   const agent = await getInstalledAgent(agentName)
-  return agent?.status ?? "stopped"
+  return agent?.status ?? AGENT_STATUS.STOPPED
 }
 
 // ─── Stop all ─────────────────────────────────────────────────────────────────
@@ -287,7 +287,7 @@ export async function stopAllAgents(): Promise<void> {
 
 async function notifyStopped(runId: string): Promise<void> {
   try {
-    await apiCall(`${BASE_URL}/stopped`, {
+    await apiCall(`${API_URLS.AGENT_BASE}/agents/stopped`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: runId, last_error: null }),
@@ -306,7 +306,7 @@ async function notifyStopped(runId: string): Promise<void> {
  */
 export async function forceStopIfRunning(agentName: string): Promise<void> {
   const agent = await getInstalledAgent(agentName)
-  if (!agent || agent.status !== "running") return
+  if (!agent || agent.status !== AGENT_STATUS.RUNNING) return
 
   bgLog.info(`forceStop: "${agentName}" — stopping heartbeat and notifying platform`)
 
@@ -314,7 +314,7 @@ export async function forceStopIfRunning(agentName: string): Promise<void> {
     stopHeartbeat(agent.run_id)
   }
 
-  await updateAgentStatus(agentName, "stopped")
+  await updateAgentStatus(agentName, AGENT_STATUS.STOPPED)
   await removeAgentCtx(agentName)
 
   const { accessToken } = await getTokens()
@@ -368,7 +368,7 @@ export async function restoreAgent(agentName: string): Promise<void> {
  */
 export async function reconnectHeartbeats(): Promise<void> {
   const agents = await getInstalledAgents()
-  const runningAgents = agents.filter(a => a.status === "running")
+  const runningAgents = agents.filter(a => a.status === AGENT_STATUS.RUNNING)
 
   for (const agent of runningAgents) {
     if (!agent.run_id) continue
@@ -395,7 +395,7 @@ export async function reconnectHeartbeats(): Promise<void> {
 export async function triggerAgent(agentName: string): Promise<void> {
   const agent = await getInstalledAgent(agentName)
   if (!agent) {
-    throw new Error(`Agent "${agentName}" is not installed`)
+    throw new AgentError(`Agent "${agentName}" is not installed`)
   }
 
   // Try in-memory first (SW still alive), then fall back to persisted storage
