@@ -16,6 +16,7 @@ import {
   removeAgentCtx,
   type InstalledAgent,
 } from "../storage/storage"
+import { apiCall } from "../utils/api-helper"
 import { bgLog } from "../utils/logger"
 
 export type { InstalledAgent }
@@ -46,17 +47,12 @@ export async function installAgent(
   config: Record<string, unknown> = {}
 ): Promise<InstalledAgent> {
   // ── Validate against registry ──
-  const { accessToken } = await getTokens()
-  if (!accessToken) throw new Error("Not logged in — please authenticate first")
-
   const isLatest = !version || version === "latest"
   const query = isLatest
     ? `?name=${encodeURIComponent(name)}&host=chrome`
     : `?name=${encodeURIComponent(name)}&version=${encodeURIComponent(version)}&host=chrome`
 
-  const res = await fetch(`${API_BASE}/agents/info${query}`, {
-    headers: { Authorization: accessToken },
-  })
+  const res = await apiCall(`${API_BASE}/agents/info${query}`)
 
   if (res.status === 404) {
     const body = await res.json() as { message?: string }
@@ -134,25 +130,19 @@ export async function uninstallAgent(name: string): Promise<void> {
 
   // Notify SaaS to delete instance from D1 and clear DO storage — mirrors lifectl rm
   if (existing.run_id) {
-    const { accessToken } = await getTokens()
-    if (accessToken) {
-      try {
-        const res = await fetch(`${API_BASE}/agents/instance`, {
-          method:  "DELETE",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization:  accessToken,
-          },
-          body: JSON.stringify({ run_id: existing.run_id }),
-        })
-        const data = await res.json() as { success: boolean; message?: string }
-        if (!data.success) {
-          bgLog.warn(`Agent "${name}" SaaS instance delete failed: ${data.message ?? "unknown"}`)
-        }
-      } catch {
-        // best-effort — local cleanup proceeds regardless (instance will expire via TTL)
-        bgLog.warn(`Agent "${name}" could not notify SaaS (offline?) — removing locally only`)
+    try {
+      const res = await apiCall(`${API_BASE}/agents/instance`, {
+        method:  "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: existing.run_id }),
+      })
+      const data = await res.json() as { success: boolean; message?: string }
+      if (!data.success) {
+        bgLog.warn(`Agent "${name}" SaaS instance delete failed: ${data.message ?? "unknown"}`)
       }
+    } catch {
+      // best-effort — local cleanup proceeds regardless (instance will expire via TTL)
+      bgLog.warn(`Agent "${name}" could not notify SaaS (offline?) — removing locally only`)
     }
   }
 

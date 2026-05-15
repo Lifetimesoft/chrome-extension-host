@@ -24,6 +24,7 @@ import {
   getAgentCtx,
   removeAgentCtx,
 } from "../storage/storage"
+import { apiCall } from "../utils/api-helper"
 import { bgLog } from "../utils/logger"
 import { runInSandbox, stopInSandbox, notifyOffscreenKeepaliveStart, notifyOffscreenKeepaliveStop } from "./sandbox.service"
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.service"
@@ -50,15 +51,11 @@ function getClientInfo() {
 
 async function registerRun(
   agentName: string,
-  agentVersion: string,
-  accessToken: string
+  agentVersion: string
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta">; instance_id: number }> {
-  const res = await fetch(`${BASE_URL}/run`, {
+  const res = await apiCall(`${BASE_URL}/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: accessToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       agent_name:    agentName,
       agent_version: agentVersion,
@@ -89,15 +86,11 @@ async function registerRun(
 }
 
 async function restartRun(
-  instanceId: number,
-  accessToken: string
+  instanceId: number
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta"> }> {
-  const res = await fetch(`${BASE_URL}/restart`, {
+  const res = await apiCall(`${BASE_URL}/restart`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: accessToken,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       instance_id:  instanceId,
       container_id: `chrome-${Date.now()}`,
@@ -136,9 +129,6 @@ export async function startAgent(agentName: string): Promise<void> {
   const agent = await getInstalledAgent(agentName)
   if (!agent) throw new Error(`Agent "${agentName}" is not installed`)
 
-  const { accessToken } = await getTokens()
-  if (!accessToken) throw new Error("Not logged in — please authenticate first")
-
   bgLog.info(`Starting agent "${agentName}" v${agent.version} via sandbox...`)
 
   let agentCtx: Pick<Context, "input" | "config" | "env" | "meta">
@@ -148,13 +138,13 @@ export async function startAgent(agentName: string): Promise<void> {
     if (instanceId !== undefined) {
       bgLog.info(`Restarting existing instance ${instanceId} for "${agentName}"...`)
       try {
-        const { ctx } = await restartRun(instanceId, accessToken)
+        const { ctx } = await restartRun(instanceId)
         agentCtx = ctx
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         if (msg === "INSTANCE_EXPIRED") {
           bgLog.info(`Instance expired for "${agentName}" — registering new run...`)
-          const { ctx, instance_id } = await registerRun(agentName, agent.version, accessToken)
+          const { ctx, instance_id } = await registerRun(agentName, agent.version)
           agentCtx = ctx
           instanceId = instance_id
         } else {
@@ -163,7 +153,7 @@ export async function startAgent(agentName: string): Promise<void> {
       }
     } else {
       bgLog.info(`Registering new run for "${agentName}"...`)
-      const { ctx, instance_id } = await registerRun(agentName, agent.version, accessToken)
+      const { ctx, instance_id } = await registerRun(agentName, agent.version)
       agentCtx = ctx
       instanceId = instance_id
     }
@@ -259,9 +249,8 @@ export async function stopAgent(agentName: string): Promise<void> {
   }
 
   // Notify platform so DO marks agent as STOPPED (not just OFFLINE via WS close)
-  const { accessToken } = await getTokens()
-  if (accessToken && agent?.run_id) {
-    await notifyStopped(agent.run_id, accessToken)
+  if (agent?.run_id) {
+    await notifyStopped(agent.run_id)
   }
 
   bgLog.info(`Agent "${agentName}" stopped`)
@@ -288,14 +277,11 @@ export async function stopAllAgents(): Promise<void> {
 
 // ─── Notify platform agent stopped ───────────────────────────────────────────
 
-async function notifyStopped(runId: string, accessToken: string): Promise<void> {
+async function notifyStopped(runId: string): Promise<void> {
   try {
-    await fetch(`${BASE_URL}/stopped`, {
+    await apiCall(`${BASE_URL}/stopped`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: accessToken,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: runId, last_error: null }),
     })
   } catch {
@@ -325,7 +311,7 @@ export async function forceStopIfRunning(agentName: string): Promise<void> {
 
   const { accessToken } = await getTokens()
   if (accessToken && agent.run_id) {
-    await notifyStopped(agent.run_id, accessToken)
+    await notifyStopped(agent.run_id)
   }
 
   if (_running.size === 0) {
