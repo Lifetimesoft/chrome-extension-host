@@ -386,11 +386,14 @@ export async function reconnectHeartbeats(): Promise<void> {
  */
 export async function triggerAgent(agentName: string): Promise<void> {
   const agent = await getInstalledAgent(agentName)
-  if (!agent) throw new Error(`Agent "${agentName}" is not installed`)
+  if (!agent) {
+    throw new Error(`Agent "${agentName}" is not installed`)
+  }
 
   // Try in-memory first (SW still alive), then fall back to persisted storage
   // (SW was restarted — equivalent to Node.js reading AGENT_CTX from process.env)
   let agentCtx = _agentCtx.get(agentName)
+  
   if (!agentCtx) {
     const stored = await getAgentCtx(agentName) as Pick<Context, "input" | "config" | "env" | "meta"> | undefined
     if (stored) {
@@ -408,16 +411,16 @@ export async function triggerAgent(agentName: string): Promise<void> {
     }
   }
 
-  bgLog.info(`Trigger: running "${agentName}" in sandbox (in-process)`)
+  bgLog.info(`Trigger: running "${agentName}" in sandbox`)
 
   runInSandbox({
     agentName,
     agentVersion: agent.version,
     agentCtx,
   }).then(() => {
-    bgLog.info(`Trigger: "${agentName}" sandbox run completed`)
+    bgLog.info(`Trigger: "${agentName}" completed`)
   }).catch((e: unknown) => {
-    bgLog.error(`Trigger: "${agentName}" sandbox run failed:`, e instanceof Error ? e.message : String(e))
+    bgLog.error(`Trigger: "${agentName}" failed:`, e instanceof Error ? e.message : String(e))
   })
 }
 

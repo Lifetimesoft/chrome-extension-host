@@ -217,7 +217,6 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
   // Agent run completed
   if (message.type === "offscreen_done") {
     const { requestId } = message as { requestId: string }
-    bgLog.info(`Sandbox run done: requestId=${requestId} pending=${_pendingRuns.has(requestId)}`)
     const pending = _pendingRuns.get(requestId)
     if (pending) {
       _pendingRuns.delete(requestId)
@@ -229,7 +228,7 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
   // Agent run errored
   if (message.type === "offscreen_error") {
     const { requestId, error } = message as { requestId: string; error: string }
-    bgLog.error(`Sandbox run error: requestId=${requestId} error=${error}`)
+    bgLog.error(`Sandbox run error: ${error}`)
     const pending = _pendingRuns.get(requestId)
     if (pending) {
       _pendingRuns.delete(requestId)

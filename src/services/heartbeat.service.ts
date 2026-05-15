@@ -16,6 +16,7 @@
 
 import { bgLog } from "../utils/logger"
 import { getTokens } from "../storage/storage"
+import { triggerAgent, applyConfigUpdate } from "./runtime.service"
 
 const DEFAULT_WS_URL      = "wss://app.lifetimesoft.com/cli/ai-account-management/agents/ws"
 const HEARTBEAT_INTERVAL  = 20_000   // 20s — matches Node.js runtime
@@ -159,25 +160,22 @@ function handleMessage(agentName: string, runId: string, data: string): void {
 
     if (msg.type === "trigger") {
       bgLog.info(`Heartbeat: trigger received for "${agentName}"`)
-      // Forward to background to re-run the agent in sandbox
-      chrome.runtime.sendMessage({
-        type:      "heartbeat_trigger",
-        agentName,
-        runId,
-      }).catch(() => { /* background may not be listening */ })
+      // Call triggerAgent directly instead of sending message to background
+      triggerAgent(agentName).catch((e: unknown) => {
+        bgLog.error(`Heartbeat: triggerAgent failed for "${agentName}":`, e instanceof Error ? e.message : String(e))
+      })
     }
 
     if (msg.type === "config_updated") {
       bgLog.info(`Heartbeat: config_updated received for "${agentName}"`)
-      chrome.runtime.sendMessage({
-        type:      "heartbeat_config_updated",
-        agentName,
-        runId,
-        config:    msg.config,
-      }).catch(() => {})
+      // Call applyConfigUpdate directly instead of sending message to background
+      const config = msg.config as Record<string, unknown>
+      applyConfigUpdate(agentName, config).catch((e: unknown) => {
+        bgLog.error(`Heartbeat: config update failed for "${agentName}":`, e instanceof Error ? e.message : String(e))
+      })
     }
 
-  } catch {
-    // ignore malformed messages
+  } catch (e) {
+    bgLog.error(`Heartbeat: failed to parse message for "${agentName}":`, e)
   }
 }

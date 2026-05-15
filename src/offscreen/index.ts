@@ -12,9 +12,11 @@
  *    since the sandbox has no access to chrome.* APIs
  */
 
-// ─── Sandbox iframe reference ─────────────────────────────────────────────────
+// ─── Initialize sandbox iframe ────────────────────────────────────────────────
 
+// Set sandbox src using chrome.runtime.getURL so it always resolves correctly
 const sandboxFrame = document.getElementById("sandbox-frame") as HTMLIFrameElement
+sandboxFrame.src = chrome.runtime.getURL("sandbox/index.html")
 
 // Wait for the sandbox iframe to finish loading before sending any messages.
 // The iframe src is set dynamically in the HTML via chrome.runtime.getURL().

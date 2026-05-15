@@ -28,11 +28,6 @@
   sandbox="allow-scripts"
   style="display:none"
 ></iframe>
-<script>
-  // Set sandbox src using chrome.runtime.getURL so it always resolves correctly
-  // regardless of where the offscreen document is loaded from.
-  document.getElementById("sandbox-frame").src = chrome.runtime.getURL("sandbox/index.html")
-</script>
 <script type="module" src="index.js"></script>
 </body>
 </html>
