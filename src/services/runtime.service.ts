@@ -28,6 +28,7 @@ import { apiCall } from "../utils/api-helper"
 import { bgLog } from "../utils/logger"
 import { runInSandbox, stopInSandbox, notifyOffscreenKeepaliveStart, notifyOffscreenKeepaliveStop } from "./sandbox.service"
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.service"
+import { startScheduler, stopScheduler } from "./scheduler.service"
 
 const BASE_URL = "https://app.lifetimesoft.com/cli/ai-account-management/agents"
 
@@ -196,6 +197,10 @@ export async function startAgent(agentName: string): Promise<void> {
     await startHeartbeat(agentName, agentCtx.meta.run_id, agentCtx.meta.runtime?.ws_url)
   }
 
+  // Start scheduler based on config
+  const schedulerConfig = agentCtx.config?.scheduler ?? { type: "none" }
+  startScheduler(agentName, schedulerConfig)
+
   // Run agent in sandbox — fire and forget (scheduler handles repeats via alarms)
   runInSandbox({
     agentName,
@@ -232,6 +237,9 @@ export async function stopAgent(agentName: string): Promise<void> {
   bgLog.info(`Stopping agent "${agentName}"...`)
   _running.delete(agentName)
   _agentCtx.delete(agentName)
+
+  // Stop scheduler
+  stopScheduler(agentName)
 
   // Stop heartbeat before stopping sandbox so DO gets notified cleanly
   const agent = await getInstalledAgent(agentName)
@@ -454,6 +462,10 @@ export async function applyConfigUpdate(
   // Persist updated ctx back to storage so next SW wake-up gets the new config
   _agentCtx.set(agentName, agentCtx)
   await saveAgentCtx(agentName, agentCtx)
+
+  // Update scheduler if config changed
+  const schedulerConfig = (config as { scheduler?: any })?.scheduler ?? { type: "none" }
+  startScheduler(agentName, schedulerConfig)
 
   bgLog.info(`config_updated applied for "${agentName}" — ctx updated in memory and storage`)
 }

@@ -13,6 +13,7 @@ import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "..
 import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
 import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning } from "../services/runtime.service"
 import { handleOffscreenMessage, ensureOffscreenAlive } from "../services/sandbox.service"
+import { handleAlarm } from "../services/scheduler.service"
 import { getTokens } from "../storage/storage"
 
 const APP_BASE = "https://app.lifetimesoft.com/cli/ai-account-management"
@@ -364,8 +365,12 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Keepalive alarm handler — reconnect any dropped heartbeat WS connections
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== KEEPALIVE_ALARM) return
-  void reconnectHeartbeats()
+  if (alarm.name === KEEPALIVE_ALARM) {
+    void reconnectHeartbeats()
+  } else {
+    // Handle scheduler alarms
+    handleAlarm(alarm)
+  }
 })
 
 // Re-bootstrap every time the service worker wakes up
