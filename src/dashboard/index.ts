@@ -103,49 +103,62 @@ function renderAgents(agents: InstalledAgent[]): void {
 
   // Attach event listeners
   container.querySelectorAll<HTMLButtonElement>("[data-action]").forEach(btn => {
-    btn.addEventListener("click", () => handleAgentAction(btn.dataset.action!, btn.dataset.name!))
+    btn.addEventListener("click", () => handleAgentAction(btn.dataset.action!, btn.dataset.name!, btn))
   })
 }
 
 // ─── Agent actions ────────────────────────────────────────────────────────────
 
-async function handleAgentAction(action: string, name: string): Promise<void> {
+async function handleAgentAction(action: string, name: string, btn?: HTMLButtonElement): Promise<void> {
   setNotification("", false)
 
-  if (action === "start") {
-    setNotification(`Starting "${name}"...`, false)
-    const res = await sendMsg<GenericResponse>({ type: "agent_start", name }).catch(e => ({
-      success: false,
-      error: e instanceof Error ? e.message : String(e),
-    }))
-    if (!res.success) {
-      setNotification(`Failed to start "${name}": ${res.error ?? "unknown error"}`, true)
+  if (btn) btn.disabled = true
+
+  try {
+    if (action === "start") {
+      setNotification(`Starting "${name}"...`, false)
+      const res = await sendMsg<GenericResponse>({ type: "agent_start", name }).catch(e => ({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      }))
+      if (!res.success) {
+        setNotification(`Failed to start "${name}": ${res.error ?? "unknown error"}`, true)
+      }
+    }
+
+    if (action === "stop") {
+      setNotification(`Stopping "${name}"...`, false)
+      await sendMsg({ type: "agent_stop", name }).catch(() => {})
+    }
+
+    if (action === "logs") {
+      await sendMsg({ type: "open_logs", agent: name }).catch(() => {})
+      if (btn) btn.disabled = false
+      return
+    }
+
+    if (action === "uninstall") {
+      if (!confirm(`Uninstall agent "${name}"? This will stop it if running.`)) {
+        if (btn) btn.disabled = false
+        return
+      }
+      const res = await sendMsg<GenericResponse>({ type: "agent_uninstall", name }).catch(e => ({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      }))
+      if (!res.success) {
+        setNotification(`Failed to uninstall "${name}": ${res.error ?? "unknown error"}`, true)
+      }
+    }
+
+    // Refresh status after action
+    await refreshStatus()
+  } finally {
+    // If the button is still in the DOM (not replaced by refreshStatus), re-enable it
+    if (btn && document.body.contains(btn)) {
+      btn.disabled = false
     }
   }
-
-  if (action === "stop") {
-    setNotification(`Stopping "${name}"...`, false)
-    await sendMsg({ type: "agent_stop", name }).catch(() => {})
-  }
-
-  if (action === "logs") {
-    await sendMsg({ type: "open_logs", agent: name }).catch(() => {})
-    return
-  }
-
-  if (action === "uninstall") {
-    if (!confirm(`Uninstall agent "${name}"? This will stop it if running.`)) return
-    const res = await sendMsg<GenericResponse>({ type: "agent_uninstall", name }).catch(e => ({
-      success: false,
-      error: e instanceof Error ? e.message : String(e),
-    }))
-    if (!res.success) {
-      setNotification(`Failed to uninstall "${name}": ${res.error ?? "unknown error"}`, true)
-    }
-  }
-
-  // Refresh status after action
-  await refreshStatus()
 }
 
 // ─── Status refresh ───────────────────────────────────────────────────────────
