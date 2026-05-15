@@ -11,7 +11,7 @@
 import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
 import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
-import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent } from "../services/runtime.service"
+import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning } from "../services/runtime.service"
 import { handleOffscreenMessage, ensureOffscreenAlive } from "../services/sandbox.service"
 import { getTokens } from "../storage/storage"
 
@@ -157,9 +157,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "agent_uninstall") {
     const { name } = message as { name: string }
     const doUninstall = async () => {
-      // Stop runtime first if running
+      // Stop runtime if running in memory
       if (isAgentRunning(name)) {
         await stopAgent(name)
+      } else {
+        // SW may have restarted — check storage status and stop heartbeat + notify platform
+        // even if _running map is empty
+        await forceStopIfRunning(name)
       }
       await uninstallAgent(name)
     }

@@ -303,6 +303,36 @@ async function notifyStopped(runId: string, accessToken: string): Promise<void> 
   }
 }
 
+// ─── Force stop (for uninstall when SW was restarted) ────────────────────────
+
+/**
+ * Stop an agent that may be running but whose state is only in storage (SW restarted).
+ * Used before uninstall to ensure heartbeat is stopped and platform is notified.
+ * Safe to call even if agent is not running — no-op in that case.
+ */
+export async function forceStopIfRunning(agentName: string): Promise<void> {
+  const agent = await getInstalledAgent(agentName)
+  if (!agent || agent.status !== "running") return
+
+  bgLog.info(`forceStop: "${agentName}" — stopping heartbeat and notifying platform`)
+
+  if (agent.run_id) {
+    stopHeartbeat(agent.run_id)
+  }
+
+  await updateAgentStatus(agentName, "stopped")
+  await removeAgentCtx(agentName)
+
+  const { accessToken } = await getTokens()
+  if (accessToken && agent.run_id) {
+    await notifyStopped(agent.run_id, accessToken)
+  }
+
+  if (_running.size === 0) {
+    notifyOffscreenKeepaliveStop()
+  }
+}
+
 // ─── Reconnect heartbeats after SW wake-up ───────────────────────────────────
 
 /**

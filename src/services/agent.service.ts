@@ -13,6 +13,7 @@ import {
   upsertInstalledAgent,
   removeInstalledAgent,
   getTokens,
+  removeAgentCtx,
   type InstalledAgent,
 } from "../storage/storage"
 import { bgLog } from "../utils/logger"
@@ -120,7 +121,8 @@ export async function installAgent(
 // ─── Uninstall ────────────────────────────────────────────────────────────────
 
 /**
- * Uninstall an agent — removes metadata from storage.
+ * Uninstall an agent — stops runtime, removes metadata from storage,
+ * and deletes the instance from the SaaS platform (mirrors `lifectl ai agent rm`).
  * Caller is responsible for stopping the runtime before calling this.
  */
 export async function uninstallAgent(name: string): Promise<void> {
@@ -130,7 +132,32 @@ export async function uninstallAgent(name: string): Promise<void> {
     return
   }
 
+  // Notify SaaS to delete instance from D1 and clear DO storage — mirrors lifectl rm
+  if (existing.run_id) {
+    const { accessToken } = await getTokens()
+    if (accessToken) {
+      try {
+        const res = await fetch(`${API_BASE}/agents/instance`, {
+          method:  "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization:  accessToken,
+          },
+          body: JSON.stringify({ run_id: existing.run_id }),
+        })
+        const data = await res.json() as { success: boolean; message?: string }
+        if (!data.success) {
+          bgLog.warn(`Agent "${name}" SaaS instance delete failed: ${data.message ?? "unknown"}`)
+        }
+      } catch {
+        // best-effort — local cleanup proceeds regardless (instance will expire via TTL)
+        bgLog.warn(`Agent "${name}" could not notify SaaS (offline?) — removing locally only`)
+      }
+    }
+  }
+
   await removeInstalledAgent(name)
+  await removeAgentCtx(name)
   bgLog.info(`Agent "${name}" uninstalled`)
 }
 
