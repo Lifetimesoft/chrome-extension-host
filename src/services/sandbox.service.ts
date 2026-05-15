@@ -40,10 +40,28 @@ async function ensureOffscreen(): Promise<void> {
   _offscreenReady = true
 }
 
+export async function ensureOffscreenAlive(): Promise<void> {
+  await ensureOffscreen()
+}
+
 export async function closeOffscreen(): Promise<void> {
   if (!_offscreenReady) return
   await chrome.offscreen.closeDocument().catch(() => {})
   _offscreenReady = false
+}
+
+// ─── Keepalive control ────────────────────────────────────────────────────────
+
+/** Tell offscreen to start pinging SW every 20s — call when first agent starts */
+export function notifyOffscreenKeepaliveStart(): void {
+  if (!_offscreenReady) return
+  chrome.runtime.sendMessage({ type: "offscreen_keepalive_start" }).catch(() => {})
+}
+
+/** Tell offscreen to stop pinging SW — call when last agent stops */
+export function notifyOffscreenKeepaliveStop(): void {
+  if (!_offscreenReady) return
+  chrome.runtime.sendMessage({ type: "offscreen_keepalive_stop" }).catch(() => {})
 }
 
 // ─── Agent bundle cache ───────────────────────────────────────────────────────
@@ -199,6 +217,7 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
   // Agent run completed
   if (message.type === "offscreen_done") {
     const { requestId } = message as { requestId: string }
+    bgLog.info(`Sandbox run done: requestId=${requestId} pending=${_pendingRuns.has(requestId)}`)
     const pending = _pendingRuns.get(requestId)
     if (pending) {
       _pendingRuns.delete(requestId)
@@ -210,6 +229,7 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
   // Agent run errored
   if (message.type === "offscreen_error") {
     const { requestId, error } = message as { requestId: string; error: string }
+    bgLog.error(`Sandbox run error: requestId=${requestId} error=${error}`)
     const pending = _pendingRuns.get(requestId)
     if (pending) {
       _pendingRuns.delete(requestId)
@@ -268,6 +288,8 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
       accessToken,
       refreshToken,
       requestId,
+    }).then(() => {
+      bgLog.info(`Sandbox run dispatched: ${agentName} requestId=${requestId}`)
     }).catch((e: unknown) => {
       _pendingRuns.delete(requestId)
       clearTimeout(timer)

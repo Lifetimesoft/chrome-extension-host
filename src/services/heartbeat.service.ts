@@ -41,10 +41,10 @@ const _connections = new Map<string, HeartbeatConnection>()
  * Safe to call multiple times — existing connection for the same run_id is reused.
  * @param wsUrl - WebSocket URL from ctx.meta.runtime.ws_url (falls back to default if omitted)
  */
-export function startHeartbeat(agentName: string, runId: string, wsUrl?: string): void {
+export function startHeartbeat(agentName: string, runId: string, wsUrl?: string): Promise<void> {
   if (_connections.has(runId)) {
     bgLog.info(`Heartbeat already active for "${agentName}" (${runId})`)
-    return
+    return Promise.resolve()
   }
 
   const resolvedWsUrl = wsUrl ?? DEFAULT_WS_URL
@@ -59,7 +59,9 @@ export function startHeartbeat(agentName: string, runId: string, wsUrl?: string)
   }
   _connections.set(runId, conn)
 
-  void connect(runId, conn)
+  // Return a promise that resolves once the WebSocket is open (or fails to connect).
+  // Callers can await this to ensure the DO has an active connection before proceeding.
+  return connectWithReady(runId, conn)
 }
 
 /**
@@ -78,13 +80,28 @@ export function stopHeartbeat(runId: string): void {
 
 // ─── Internal ─────────────────────────────────────────────────────────────────
 
-async function connect(runId: string, conn: HeartbeatConnection): Promise<void> {
-  if (conn.stopped) return
+/**
+ * Connect and return a Promise that resolves when the WebSocket is open,
+ * or rejects after the first failed attempt (reconnects continue in background).
+ */
+async function connectWithReady(runId: string, conn: HeartbeatConnection): Promise<void> {
+  return new Promise<void>((resolve) => {
+    void connectOnce(runId, conn, resolve)
+  })
+}
+
+async function connectOnce(
+  runId: string,
+  conn: HeartbeatConnection,
+  onReady: (() => void) | null
+): Promise<void> {
+  if (conn.stopped) { onReady?.(); return }
 
   const { accessToken } = await getTokens()
   if (!accessToken) {
     bgLog.warn(`Heartbeat for "${conn.agentName}": no access token — retrying in ${RECONNECT_DELAY}ms`)
-    setTimeout(() => { void connect(runId, conn) }, RECONNECT_DELAY)
+    onReady?.()   // resolve anyway so startAgent() isn't blocked forever
+    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
     return
   }
 
@@ -95,7 +112,8 @@ async function connect(runId: string, conn: HeartbeatConnection): Promise<void> 
     ws = new WebSocket(wsUrl)
   } catch (e) {
     bgLog.error(`Heartbeat for "${conn.agentName}": failed to create WebSocket:`, String(e))
-    setTimeout(() => { void connect(runId, conn) }, RECONNECT_DELAY)
+    onReady?.()
+    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
     return
   }
 
@@ -103,6 +121,7 @@ async function connect(runId: string, conn: HeartbeatConnection): Promise<void> 
 
   ws.addEventListener("open", () => {
     bgLog.info(`Heartbeat connected for "${conn.agentName}" run_id=${runId}`)
+    onReady?.()   // WS is open — caller can now safely trigger
 
     conn.heartbeatTimer = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -122,9 +141,11 @@ async function connect(runId: string, conn: HeartbeatConnection): Promise<void> 
 
   ws.addEventListener("close", (event: CloseEvent) => {
     if (conn.heartbeatTimer) { clearInterval(conn.heartbeatTimer); conn.heartbeatTimer = null }
+    // If WS closed before open fired, resolve so caller isn't blocked
+    onReady?.()
     if (conn.stopped) return
     bgLog.info(`Heartbeat closed for "${conn.agentName}" (${event.code}) — reconnecting in ${RECONNECT_DELAY}ms`)
-    setTimeout(() => { void connect(runId, conn) }, RECONNECT_DELAY)
+    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
   })
 
   ws.addEventListener("error", () => {

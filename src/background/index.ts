@@ -11,43 +11,63 @@
 import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
 import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
-import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate } from "../services/runtime.service"
-import { handleOffscreenMessage } from "../services/sandbox.service"
+import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent } from "../services/runtime.service"
+import { handleOffscreenMessage, ensureOffscreenAlive } from "../services/sandbox.service"
 import { getTokens } from "../storage/storage"
 
 const APP_BASE = "https://app.lifetimesoft.com/cli/ai-account-management"
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
+// Guard against concurrent bootstrap calls — MV3 SW can wake up multiple times
+// in quick succession (e.g. install event + top-level wake + incoming message)
+let _bootstrapping = false
+
 async function bootstrap(): Promise<void> {
-  bgLog.info("Host bootstrapping...")
+  if (_bootstrapping) return
+  _bootstrapping = true
 
-  // Resume login polling if SW was terminated during a login flow
-  await resumeLoginIfPending()
+  try {
+    bgLog.info("Host bootstrapping...")
 
-  const loggedIn = await isLoggedIn()
-  if (!loggedIn) {
-    bgLog.info("Not logged in — waiting for user to authenticate via popup")
-    return
-  }
+    // Resume login polling if SW was terminated during a login flow
+    await resumeLoginIfPending()
 
-  const agents = await listInstalledAgents()
-  const runningAgents = agents.filter(a => a.status === "running")
-
-  if (runningAgents.length === 0) {
-    bgLog.info("No previously running agents to restore")
-    return
-  }
-
-  bgLog.info(`Restoring ${runningAgents.length} previously running agent(s)...`)
-
-  for (const agent of runningAgents) {
-    try {
-      await startAgent(agent.name)
-      bgLog.info(`Restored agent "${agent.name}"`)
-    } catch (e) {
-      bgLog.error(`Failed to restore agent "${agent.name}":`, e instanceof Error ? e.message : String(e))
+    const loggedIn = await isLoggedIn()
+    if (!loggedIn) {
+      bgLog.info("Not logged in — waiting for user to authenticate via popup")
+      return
     }
+
+    const agents = await listInstalledAgents()
+    // Only restore agents that are marked running AND not already running in memory.
+    // This prevents double-start when SW wakes up due to an incoming message
+    // (e.g. heartbeat_trigger) while a previous bootstrap already started the agent.
+    const toRestore = agents.filter(a => a.status === "running" && !isAgentRunning(a.name))
+
+    if (toRestore.length === 0) {
+      bgLog.info("No previously running agents to restore")
+      return
+    }
+
+    bgLog.info(`Restoring ${toRestore.length} previously running agent(s)...`)
+
+    // Ensure offscreen document is alive so keepalive pings keep the SW active
+    await ensureOffscreenAlive()
+
+    for (const agent of toRestore) {
+      try {
+        // Use reconnectHeartbeats-style restore: load ctx from storage and reconnect WS.
+        // Only fall back to full startAgent() if ctx is missing from storage.
+        // This avoids calling /agents/restart on every SW wake-up.
+        await restoreAgent(agent.name)
+        bgLog.info(`Restored agent "${agent.name}"`)
+      } catch (e) {
+        bgLog.error(`Failed to restore agent "${agent.name}":`, e instanceof Error ? e.message : String(e))
+      }
+    }
+  } finally {
+    _bootstrapping = false
   }
 }
 
@@ -246,6 +266,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return undefined
   }
 
+  // ── Offscreen: keepalive ping — resets SW idle timer so WS stays connected ──
+  if (message.type === "offscreen_keepalive") {
+    // No-op — receiving this message is enough to reset the SW idle timer
+    sendResponse({ success: true })
+    return undefined
+  }
+
   // ── Heartbeat: trigger from DO (scheduler type: none) — run agent in sandbox in-process ──
   if (message.type === "heartbeat_trigger") {
     const { agentName } = message as { agentName: string }
@@ -320,10 +347,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
-// Bootstrap on install/update
+const KEEPALIVE_ALARM = "lts_keepalive"
+
+// Bootstrap on install/update — also set up the keepalive alarm
 chrome.runtime.onInstalled.addListener(() => {
   bgLog.info("Extension installed/updated — bootstrapping host...")
+  // Keepalive alarm: fires every 1 minute (Chrome MV3 minimum) to wake the SW
+  // and reconnect WebSocket heartbeats before the DO marks agents OFFLINE (3min timeout)
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 })
   void bootstrap()
+})
+
+// Keepalive alarm handler — reconnect any dropped heartbeat WS connections
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== KEEPALIVE_ALARM) return
+  void reconnectHeartbeats()
 })
 
 // Re-bootstrap every time the service worker wakes up

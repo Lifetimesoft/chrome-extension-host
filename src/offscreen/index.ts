@@ -197,4 +197,37 @@ chrome.runtime.onMessage.addListener((message) => {
     })
     return
   }
+
+  // Control keepalive ping — background tells offscreen when agents are running
+  if (message.type === "offscreen_keepalive_start") {
+    startKeepalive()
+    return
+  }
+
+  if (message.type === "offscreen_keepalive_stop") {
+    stopKeepalive()
+    return
+  }
 })
+
+// ─── SW keepalive ─────────────────────────────────────────────────────────────
+// The offscreen document is not terminated like the SW.
+// Ping the background SW every 20s so it stays active (resets the ~30s idle timer).
+// This prevents the SW from being terminated while agents are running,
+// keeping WebSocket heartbeat connections alive without interruption.
+// Background sends "offscreen_keepalive_start" / "offscreen_keepalive_stop" to control this.
+
+let _keepaliveTimer: ReturnType<typeof setInterval> | null = null
+
+function startKeepalive(): void {
+  if (_keepaliveTimer) return
+  _keepaliveTimer = setInterval(() => {
+    chrome.runtime.sendMessage({ type: "offscreen_keepalive" }).catch(() => {})
+  }, 20_000)
+}
+
+function stopKeepalive(): void {
+  if (!_keepaliveTimer) return
+  clearInterval(_keepaliveTimer)
+  _keepaliveTimer = null
+}

@@ -11,10 +11,17 @@ export const KEYS = {
   INSTALLED_AGENTS: "lts_installed_agents",
   // Per-agent log key — call agentLogKey(name) to get the full key
   AGENT_LOGS_PREFIX: "lts_logs_",
+  // Per-agent ctx key — call agentCtxKey(name) to get the full key
+  // Equivalent to AGENT_CTX env var in Node.js runtime (lifectl)
+  AGENT_CTX_PREFIX: "lts_ctx_",
 } as const
 
 export function agentLogKey(agentName: string): string {
   return `${KEYS.AGENT_LOGS_PREFIX}${agentName}`
+}
+
+export function agentCtxKey(agentName: string): string {
+  return `${KEYS.AGENT_CTX_PREFIX}${agentName}`
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -25,6 +32,7 @@ export interface InstalledAgent {
   status:       "running" | "stopped" | "error"
   instance_id?: number
   run_id?:      string
+  ws_url?:      string   // persisted so keepalive alarm can reconnect WS after SW restart
   installed_at: number
   config:       Record<string, unknown>  // env overrides
 }
@@ -97,4 +105,23 @@ export async function updateAgentStatus(
     agents[idx] = { ...agents[idx], status, ...extra }
     await saveInstalledAgents(agents)
   }
+}
+
+// ─── Agent ctx helpers ────────────────────────────────────────────────────────
+// Persists the full ctx returned by /agents/run or /agents/restart.
+// Equivalent to the AGENT_CTX env var that lifectl injects into the Node.js process.
+// Survives SW termination — loaded back into _agentCtx on wake-up.
+
+export async function saveAgentCtx(agentName: string, ctx: unknown): Promise<void> {
+  await chrome.storage.local.set({ [agentCtxKey(agentName)]: ctx })
+}
+
+export async function getAgentCtx(agentName: string): Promise<unknown | undefined> {
+  const key = agentCtxKey(agentName)
+  const stored = await chrome.storage.local.get(key)
+  return stored[key] as unknown | undefined
+}
+
+export async function removeAgentCtx(agentName: string): Promise<void> {
+  await chrome.storage.local.remove(agentCtxKey(agentName))
 }

@@ -16,12 +16,16 @@
 import type { Context } from "@lifetimesoft/agent-sdk"
 import {
   getInstalledAgent,
+  getInstalledAgents,
   upsertInstalledAgent,
   updateAgentStatus,
   getTokens,
+  saveAgentCtx,
+  getAgentCtx,
+  removeAgentCtx,
 } from "../storage/storage"
 import { bgLog } from "../utils/logger"
-import { runInSandbox, stopInSandbox } from "./sandbox.service"
+import { runInSandbox, stopInSandbox, notifyOffscreenKeepaliveStart, notifyOffscreenKeepaliveStop } from "./sandbox.service"
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.service"
 
 const BASE_URL = "https://app.lifetimesoft.com/cli/ai-account-management/agents"
@@ -170,13 +174,18 @@ export async function startAgent(agentName: string): Promise<void> {
     throw e
   }
 
-  // Update stored metadata
+  // Update stored metadata — persist ws_url so keepalive alarm can reconnect after SW restart
   await upsertInstalledAgent({
     ...agent,
     instance_id: instanceId,
     run_id:      agentCtx.meta.run_id,
+    ws_url:      agentCtx.meta.runtime?.ws_url,
     status:      "running",
   })
+
+  // Persist ctx to chrome.storage — equivalent to AGENT_CTX env var in Node.js runtime.
+  // Survives SW termination so trigger/config_updated can run agent without full restart.
+  await saveAgentCtx(agentName, agentCtx)
 
   bgLog.info(`Got ctx for "${agentName}" — run_id: ${agentCtx.meta.run_id}`)
 
@@ -185,9 +194,16 @@ export async function startAgent(agentName: string): Promise<void> {
   // Cache ctx for in-process trigger/config_updated handling
   _agentCtx.set(agentName, agentCtx)
 
-  // Start WebSocket heartbeat so the DO knows the agent is alive
+  // Start keepalive ping from offscreen when first agent starts
+  if (_running.size === 1) {
+    notifyOffscreenKeepaliveStart()
+  }
+
+  // Start WebSocket heartbeat and wait for it to open before dispatching to sandbox.
+  // This ensures the DO has an active WS connection before the agent run completes
+  // and the user can trigger it from the SaaS dashboard.
   if (agentCtx.meta.run_id) {
-    startHeartbeat(agentName, agentCtx.meta.run_id, agentCtx.meta.runtime?.ws_url)
+    await startHeartbeat(agentName, agentCtx.meta.run_id, agentCtx.meta.runtime?.ws_url)
   }
 
   // Run agent in sandbox — fire and forget (scheduler handles repeats via alarms)
@@ -201,6 +217,7 @@ export async function startAgent(agentName: string): Promise<void> {
     if (_running.has(agentName)) {
       _running.delete(agentName)
       _agentCtx.delete(agentName)
+      if (_running.size === 0) notifyOffscreenKeepaliveStop()
       updateAgentStatus(agentName, "stopped").catch(() => {})
     }
   }).catch((e: unknown) => {
@@ -209,6 +226,7 @@ export async function startAgent(agentName: string): Promise<void> {
     if (_running.has(agentName)) {
       _running.delete(agentName)
       _agentCtx.delete(agentName)
+      if (_running.size === 0) notifyOffscreenKeepaliveStop()
       updateAgentStatus(agentName, "error").catch(() => {})
     }
   })
@@ -233,6 +251,12 @@ export async function stopAgent(agentName: string): Promise<void> {
 
   await stopInSandbox(agentName)
   await updateAgentStatus(agentName, "stopped")
+  await removeAgentCtx(agentName)
+
+  // Stop keepalive ping when last agent stops
+  if (_running.size === 0) {
+    notifyOffscreenKeepaliveStop()
+  }
 
   // Notify platform so DO marks agent as STOPPED (not just OFFLINE via WS close)
   const { accessToken } = await getTokens()
@@ -279,7 +303,66 @@ async function notifyStopped(runId: string, accessToken: string): Promise<void> 
   }
 }
 
-// ─── In-process trigger (scheduler type: none) ────────────────────────────────
+// ─── Reconnect heartbeats after SW wake-up ───────────────────────────────────
+
+/**
+ * Restore a single agent after SW restart — load ctx from storage and reconnect WS.
+ * Does NOT call /agents/restart — avoids unnecessary API calls on every SW wake-up.
+ * Falls back to full startAgent() only if ctx is missing from storage.
+ */
+export async function restoreAgent(agentName: string): Promise<void> {
+  const agent = await getInstalledAgent(agentName)
+  if (!agent?.run_id) {
+    bgLog.warn(`restoreAgent: "${agentName}" has no run_id — doing full start`)
+    await startAgent(agentName)
+    return
+  }
+
+  const stored = await getAgentCtx(agentName) as Pick<Context, "input" | "config" | "env" | "meta"> | undefined
+  if (!stored) {
+    bgLog.warn(`restoreAgent: "${agentName}" has no stored ctx — doing full start`)
+    await startAgent(agentName)
+    return
+  }
+
+  bgLog.info(`restoreAgent: "${agentName}" — restoring ctx from storage, reconnecting WS`)
+  _agentCtx.set(agentName, stored)
+  _running.add(agentName)
+
+  // Start keepalive ping from offscreen when first agent is restored
+  if (_running.size === 1) {
+    notifyOffscreenKeepaliveStart()
+  }
+
+  await startHeartbeat(agentName, agent.run_id, agent.ws_url)
+}
+
+/**
+ * Called by the keepalive alarm every minute.
+ * Reconnects WebSocket heartbeats for all agents that are stored as "running"
+ * but whose WS connection was dropped when the SW was terminated.
+ */
+export async function reconnectHeartbeats(): Promise<void> {
+  const agents = await getInstalledAgents()
+  const runningAgents = agents.filter(a => a.status === "running")
+
+  for (const agent of runningAgents) {
+    if (!agent.run_id) continue
+
+    // Restore ctx into memory if SW was restarted and _agentCtx is empty
+    if (!_agentCtx.has(agent.name)) {
+      const stored = await getAgentCtx(agent.name) as Pick<Context, "input" | "config" | "env" | "meta"> | undefined
+      if (stored) {
+        _agentCtx.set(agent.name, stored)
+        _running.add(agent.name)
+        if (_running.size === 1) notifyOffscreenKeepaliveStart()
+      }
+    }
+
+    // startHeartbeat is idempotent — skips if connection already active for this run_id
+    await startHeartbeat(agent.name, agent.run_id, agent.ws_url)
+  }
+}
 
 /**
  * Run the agent once in sandbox using the existing ctx — no new API call.
@@ -289,14 +372,28 @@ export async function triggerAgent(agentName: string): Promise<void> {
   const agent = await getInstalledAgent(agentName)
   if (!agent) throw new Error(`Agent "${agentName}" is not installed`)
 
-  const agentCtx = _agentCtx.get(agentName)
+  // Try in-memory first (SW still alive), then fall back to persisted storage
+  // (SW was restarted — equivalent to Node.js reading AGENT_CTX from process.env)
+  let agentCtx = _agentCtx.get(agentName)
   if (!agentCtx) {
-    bgLog.warn(`Trigger for "${agentName}" — no ctx in memory, falling back to full restart`)
-    await startAgent(agentName)
-    return
+    const stored = await getAgentCtx(agentName) as Pick<Context, "input" | "config" | "env" | "meta"> | undefined
+    if (stored) {
+      bgLog.info(`Trigger for "${agentName}" — restoring ctx from storage (SW was restarted)`)
+      agentCtx = stored
+      _agentCtx.set(agentName, agentCtx)
+      // Reconnect heartbeat since SW memory was cleared
+      if (agentCtx.meta.run_id) {
+        await startHeartbeat(agentName, agentCtx.meta.run_id, agentCtx.meta.runtime?.ws_url)
+      }
+    } else {
+      bgLog.info(`Trigger for "${agentName}" — no ctx in storage, doing full start`)
+      await startAgent(agentName)
+      return
+    }
   }
 
   bgLog.info(`Trigger: running "${agentName}" in sandbox (in-process)`)
+
   runInSandbox({
     agentName,
     agentVersion: agent.version,
@@ -318,18 +415,26 @@ export async function applyConfigUpdate(
   agentName: string,
   config: Record<string, unknown>
 ): Promise<void> {
-  const agentCtx = _agentCtx.get(agentName)
+  // Try in-memory first, then fall back to persisted storage
+  let agentCtx = _agentCtx.get(agentName)
   if (!agentCtx) {
-    bgLog.warn(`config_updated for "${agentName}" — no ctx in memory, skipping in-process update`)
-    return
+    const stored = await getAgentCtx(agentName) as Pick<Context, "input" | "config" | "env" | "meta"> | undefined
+    if (!stored) {
+      bgLog.warn(`config_updated for "${agentName}" — no ctx in memory or storage, skipping`)
+      return
+    }
+    agentCtx = stored
   }
 
-  // update ctx in-memory — same as runtime-chrome.ts onWsMessage config_updated
+  // Update ctx — same as runtime-chrome.ts onWsMessage config_updated
   agentCtx.config = config as Context["config"]
   if ((config as { env?: Record<string, unknown> }).env) {
     agentCtx.env = (config as { env: Record<string, unknown> }).env
   }
-  _agentCtx.set(agentName, agentCtx)
 
-  bgLog.info(`config_updated applied for "${agentName}" — ctx updated in memory`)
+  // Persist updated ctx back to storage so next SW wake-up gets the new config
+  _agentCtx.set(agentName, agentCtx)
+  await saveAgentCtx(agentName, agentCtx)
+
+  bgLog.info(`config_updated applied for "${agentName}" — ctx updated in memory and storage`)
 }
