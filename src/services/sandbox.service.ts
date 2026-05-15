@@ -209,8 +209,14 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
       level:     "info" | "warn" | "error" | "debug"
       args:      string[]
     }
+    // Use raw console output since sandbox already formats with [job:xxx] prefix
     const logger = createLogger(agentName as string)
-    logger[level](...(args as unknown[]))
+    if (level === "warn") {
+      // Map warn to info since bgLog doesn't have warn
+      logger.info(...(args as unknown[]))
+    } else {
+      logger[level as "info" | "error" | "debug"](...(args as unknown[]))
+    }
     return
   }
 
@@ -228,7 +234,6 @@ export function handleOffscreenMessage(message: Record<string, unknown>): void {
   // Agent run errored
   if (message.type === "offscreen_error") {
     const { requestId, error } = message as { requestId: string; error: string }
-    bgLog.error(`Sandbox run error: ${error}`)
     const pending = _pendingRuns.get(requestId)
     if (pending) {
       _pendingRuns.delete(requestId)
@@ -246,6 +251,16 @@ export interface SandboxRunOptions {
   agentCtx:    object
 }
 
+// Generate job ID like agent-sdk
+function generateJobId(): string {
+  return Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
+}
+
+// Format date like agent-sdk
+function fmtDate(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19)
+}
+
 /**
  * Run an agent inside the sandboxed iframe.
  * Fetches the bundle from the registry if not cached.
@@ -260,14 +275,29 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
   const { accessToken, refreshToken } = await getTokens()
 
   const requestId = nextRunId()
+  const jobId = generateJobId()
+
+  // Don't log start/end here - let sandbox handle it
 
   return new Promise<void>((resolve, reject) => {
-    _pendingRuns.set(requestId, { resolve, reject })
+    _pendingRuns.set(requestId, { 
+      resolve: () => {
+        // Don't log end here - sandbox already logged it
+        resolve()
+      }, 
+      reject: (e) => {
+        bgLog.error(`[${fmtDate()}] [job:${jobId}] [agent:error] job failed:`, e.message)
+        bgLog.info(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
+        reject(e)
+      }
+    })
 
     // Timeout: 10 minutes max per run
     const timer = setTimeout(() => {
       if (_pendingRuns.has(requestId)) {
         _pendingRuns.delete(requestId)
+        bgLog.error(`[${fmtDate()}] [job:${jobId}] [agent:error] job timed out after 10 minutes`)
+        bgLog.info(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
         reject(new Error(`Agent "${agentName}" run timed out after 10 minutes`))
       }
     }, 10 * 60 * 1_000)
@@ -275,8 +305,8 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
     // Wrap resolve/reject to clear timer
     const pending = _pendingRuns.get(requestId)!
     _pendingRuns.set(requestId, {
-      resolve: () => { clearTimeout(timer); resolve() },
-      reject:  (e) => { clearTimeout(timer); reject(e) },
+      resolve: () => { clearTimeout(timer); pending.resolve() },
+      reject:  (e) => { clearTimeout(timer); pending.reject(e) },
     })
 
     chrome.runtime.sendMessage({
@@ -287,8 +317,7 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
       accessToken,
       refreshToken,
       requestId,
-    }).then(() => {
-      bgLog.info(`Sandbox run dispatched: ${agentName} requestId=${requestId}`)
+      jobId,  // Send jobId to sandbox
     }).catch((e: unknown) => {
       _pendingRuns.delete(requestId)
       clearTimeout(timer)

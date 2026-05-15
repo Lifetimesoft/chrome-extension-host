@@ -55,7 +55,12 @@ function proxyCall(agentName, api, method, args) {
 }
 
 // ─── Build ctx proxy for agent ────────────────────────────────────────────────
-function buildCtx(agentName, agentCtx, accessToken) {
+function buildCtx(agentName, agentCtx, accessToken, jobId) {
+  // Format date like agent-sdk
+  function fmtDate() {
+    return new Date().toISOString().replace("T", " ").slice(0, 19)
+  }
+
   return {
     input:  agentCtx.input,
     config: agentCtx.config,
@@ -63,10 +68,10 @@ function buildCtx(agentName, agentCtx, accessToken) {
     meta:   agentCtx.meta,
 
     log: {
-      info:  (...args) => send({ type: "sandbox_log", agentName, level: "info",  args: args.map(String) }),
-      warn:  (...args) => send({ type: "sandbox_log", agentName, level: "warn",  args: args.map(String) }),
-      error: (...args) => send({ type: "sandbox_log", agentName, level: "error", args: args.map(String) }),
-      debug: (...args) => send({ type: "sandbox_log", agentName, level: "debug", args: args.map(String) }),
+      info:  (...args) => send({ type: "sandbox_log", agentName, level: "info",  args: [`[${fmtDate()}] [job:${jobId}] [agent:info]`, ...args.map(String)] }),
+      warn:  (...args) => send({ type: "sandbox_log", agentName, level: "warn",  args: [`[${fmtDate()}] [job:${jobId}] [agent:warn]`, ...args.map(String)] }),
+      error: (...args) => send({ type: "sandbox_log", agentName, level: "error", args: [`[${fmtDate()}] [job:${jobId}] [agent:error]`, ...args.map(String)] }),
+      debug: (...args) => send({ type: "sandbox_log", agentName, level: "debug", args: [`[${fmtDate()}] [job:${jobId}] [agent:debug]`, ...args.map(String)] }),
     },
 
     storage: {
@@ -88,7 +93,7 @@ function buildCtx(agentName, agentCtx, accessToken) {
 }
 
 // ─── Run agent from code string ───────────────────────────────────────────────
-async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId) {
+async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId, jobId) {
   // Stop any existing run for this agent
   if (_running.has(agentName)) {
     _running.get(agentName).abort.abort()
@@ -97,6 +102,14 @@ async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, re
 
   const abort = new AbortController()
   _running.set(agentName, { abort })
+
+  // Format date like agent-sdk
+  function fmtDate() {
+    return new Date().toISOString().replace("T", " ").slice(0, 19)
+  }
+
+  // Log job start
+  send({ type: "sandbox_log", agentName, level: "info", args: [`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`] })
 
   try {
     // Execute the bundled agent code in this sandbox context.
@@ -123,17 +136,22 @@ async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, re
       throw new Error(`Agent "${agentName}" was not created with defineAgent()`)
     }
 
-    const ctx = buildCtx(agentName, agentCtx, accessToken)
+    const ctx = buildCtx(agentName, agentCtx, accessToken, jobId)
 
     if (abort.signal.aborted) return
 
     await agentModule.run(ctx)
 
     if (!abort.signal.aborted) {
+      // Log job end
+      send({ type: "sandbox_log", agentName, level: "info", args: [`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] end job ${jobId}`] })
+      send({ type: "sandbox_log", agentName, level: "info", args: [`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`] })
       send({ type: "sandbox_done", agentName, requestId })
     }
   } catch (e) {
     if (!abort.signal.aborted) {
+      send({ type: "sandbox_log", agentName, level: "error", args: [`[${fmtDate()}] [job:${jobId}] [agent:error] ${e instanceof Error ? e.message : String(e)}`] })
+      send({ type: "sandbox_log", agentName, level: "info", args: [`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`] })
       send({ type: "sandbox_error", agentName, requestId, error: e instanceof Error ? e.message : String(e) })
     }
   } finally {
@@ -148,8 +166,8 @@ window.addEventListener("message", (event) => {
 
   // Run agent
   if (msg.type === "sandbox_run") {
-    const { agentName, code, agentCtx, accessToken, refreshToken, requestId } = msg
-    runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId)
+    const { agentName, code, agentCtx, accessToken, refreshToken, requestId, jobId } = msg
+    runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId, jobId)
     return
   }
 

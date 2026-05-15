@@ -16,6 +16,7 @@
 
 import { bgLog } from "../utils/logger"
 import { getTokens } from "../storage/storage"
+import { refreshTokenIfNeeded } from "./auth.service"
 import { triggerAgent, applyConfigUpdate } from "./runtime.service"
 
 const DEFAULT_WS_URL      = "wss://app.lifetimesoft.com/cli/ai-account-management/agents/ws"
@@ -97,6 +98,15 @@ async function connectOnce(
   onReady: (() => void) | null
 ): Promise<void> {
   if (conn.stopped) { onReady?.(); return }
+
+  // Refresh token if needed before creating WebSocket
+  const tokenRefreshed = await refreshTokenIfNeeded()
+  if (!tokenRefreshed) {
+    bgLog.warn(`Heartbeat for "${conn.agentName}": token refresh failed — retrying in ${RECONNECT_DELAY}ms`)
+    onReady?.()
+    setTimeout(() => { void connectOnce(runId, conn, null) }, RECONNECT_DELAY)
+    return
+  }
 
   const { accessToken } = await getTokens()
   if (!accessToken) {

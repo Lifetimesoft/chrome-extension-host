@@ -187,6 +187,7 @@ chrome.runtime.onMessage.addListener((message) => {
       accessToken:  message.accessToken,
       refreshToken: message.refreshToken,
       requestId:    message.requestId,
+      jobId:        message.jobId,  // Forward jobId to sandbox
     })
     return
   }
