@@ -27,13 +27,30 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
     },
   })
 
-  // Check if we need to refresh token (401 = invalid, 406 = expired)
-  if (response.status === 401 || response.status === 406) {
+  // Clone response to read body without consuming it
+  const responseClone = response.clone()
+  
+  // Check response body for auth errors (mirrors lifectl behavior)
+  let needsRefresh = false
+  try {
+    const data = await responseClone.json()
+    // app-main AuthCli always returns HTTP 200 with body:
+    //   { code: 401, success: false } → invalid token (bad signature)
+    //   { code: 406, success: false } → expired token
+    needsRefresh = data?.code === 401 || data?.code === 406
+  } catch {
+    // If response is not JSON, fall back to HTTP status check
+    needsRefresh = response.status === 401 || response.status === 406
+  }
+
+  if (needsRefresh) {
     if (!refreshToken) {
       throw new Error("Session expired — please log in again")
     }
 
     try {
+      bgLog.info("Token expired, refreshing...")
+      
       // Refresh token
       const refreshRes = await fetch(`${AUTH_URL}/cli-login/refresh`, {
         method: "POST",
