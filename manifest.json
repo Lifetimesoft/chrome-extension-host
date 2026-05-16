@@ -8,13 +8,15 @@
     "alarms",
     "tabs",
     "scripting",
-    "offscreen"
+    "offscreen",
+    "activeTab"
   ],
   "host_permissions": [
     "https://app.lifetimesoft.com/*",
     "https://registry.lifetimesoft.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://api.openai.com/*"
+    "https://api.openai.com/*",
+    "https://labs.google/*"
   ],
   "background": {
     "service_worker": "background.js",

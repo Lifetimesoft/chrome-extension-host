@@ -306,6 +306,60 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return undefined
   }
 
+  // ── Chrome API proxy: sandbox agent calls chrome.tabs/scripting via offscreen → background ──
+  if (msg.type === "agent_chrome_call") {
+    const { method, args } = msg as BackgroundMessage & { method: string; args: unknown[] }
+
+    const handleChromeCall = async (): Promise<unknown> => {
+      if (method === "tabs.create") {
+        const props = args[0] as chrome.tabs.CreateProperties
+        return new Promise((resolve, reject) => {
+          chrome.tabs.create(props, (tab) => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message))
+            resolve(tab)
+          })
+        })
+      }
+
+      if (method === "tabs.remove") {
+        const tabId = args[0] as number
+        return new Promise<void>((resolve) => {
+          chrome.tabs.remove(tabId, () => resolve())
+        })
+      }
+
+      if (method === "tabs.get") {
+        const tabId = args[0] as number
+        return new Promise((resolve, reject) => {
+          chrome.tabs.get(tabId, (tab) => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message))
+            resolve(tab)
+          })
+        })
+      }
+
+      if (method === "scripting.executeScript") {
+        const raw = args[0] as Record<string, unknown>
+        // func is serialized as string from sandbox — reconstruct it
+        if (typeof raw["func"] === "string") {
+          // eslint-disable-next-line no-new-func
+          raw["func"] = new Function(`return (${raw["func"] as string})`)() as () => unknown
+        }
+        return chrome.scripting.executeScript(raw as chrome.scripting.ScriptInjection<unknown[], unknown>)
+      }
+
+      throw new Error(`Unsupported chrome method: ${method}`)
+    }
+
+    handleChromeCall()
+      .then(result => sendResponse({ success: true, result }))
+      .catch((e: unknown) => sendResponse({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      }))
+    return true
+  }
+
   // ── AI proxy: sandbox agent calls ai.chat/image/video via offscreen → background ──
   if (msg.type === MESSAGE_TYPES.AGENT_AI_CALL) {
     const { agentName, method, args } = msg as BackgroundMessage & {

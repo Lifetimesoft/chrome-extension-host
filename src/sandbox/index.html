@@ -92,6 +92,46 @@ function buildCtx(agentName, agentCtx, accessToken, jobId) {
   }
 }
 
+// ─── chrome.* shim for agents that call chrome APIs directly ──────────────────
+// Proxies chrome.tabs and chrome.scripting calls to background via offscreen.
+// Timeout for scripting.executeScript is 10 minutes (long-running automation).
+function buildChromeShim(agentName) {
+  function chromeProxy(api, method, args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const requestId = nextProxyId()
+      _pendingProxy.set(requestId, { resolve, reject })
+      send({ type: "sandbox_proxy_request", agentName, requestId, api: "chrome", method: `${api}.${method}`, args })
+      const t = setTimeout(() => {
+        if (_pendingProxy.has(requestId)) {
+          _pendingProxy.delete(requestId)
+          reject(new Error(`chrome.${api}.${method} timed out`))
+        }
+      }, timeoutMs ?? 30_000)
+      // store timer so we can clear it on response
+      const entry = _pendingProxy.get(requestId)
+      if (entry) entry._timer = t
+    })
+  }
+
+  return {
+    tabs: {
+      create:  (props)        => chromeProxy("tabs", "create",  [props]),
+      remove:  (tabId)        => chromeProxy("tabs", "remove",  [tabId]),
+      get:     (tabId)        => chromeProxy("tabs", "get",     [tabId]),
+    },
+    scripting: {
+      executeScript: (injection) => {
+        // func must be serialized to string before postMessage (functions are not cloneable)
+        const serialized = { ...injection }
+        if (typeof serialized.func === "function") {
+          serialized.func = serialized.func.toString()
+        }
+        return chromeProxy("scripting", "executeScript", [serialized], 10 * 60_000)
+      },
+    },
+  }
+}
+
 // ─── Run agent from code string ───────────────────────────────────────────────
 async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, requestId, jobId) {
   // Stop any existing run for this agent
@@ -120,9 +160,12 @@ async function runAgent(agentName, code, agentCtx, accessToken, refreshToken, re
     const moduleExports = {}
     const moduleObj = { exports: moduleExports }
 
+    // Inject chrome shim as a global so agent code calling chrome.tabs/scripting works
+    const chromeShim = buildChromeShim(agentName)
+
     // new Function(argName1, argName2, ..., body) — args are passed at call time
-    const fn = new Function("module", "exports", code)
-    fn(moduleObj, moduleExports)
+    const fn = new Function("module", "exports", "chrome", code)
+    fn(moduleObj, moduleExports, chromeShim)
 
     // Resolve the agent — support module.exports.default (ESM interop) or module.exports directly
     const agentModule = moduleObj.exports?.default ?? moduleObj.exports
@@ -187,6 +230,7 @@ window.addEventListener("message", (event) => {
     const pending = _pendingProxy.get(requestId)
     if (!pending) return
     _pendingProxy.delete(requestId)
+    if (pending._timer) clearTimeout(pending._timer)
     if (error) {
       pending.reject(new Error(error))
     } else {

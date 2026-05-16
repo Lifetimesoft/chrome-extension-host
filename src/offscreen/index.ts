@@ -107,6 +107,19 @@ async function handleProxyCall(
     return res.result
   }
 
+  // ── chrome.tabs / chrome.scripting ──
+  if (api === "chrome") {
+    const res = await chrome.runtime.sendMessage({
+      type: "agent_chrome_call",
+      agentName,
+      method,
+      args,
+    }) as { success: boolean; result?: unknown; error?: string }
+
+    if (!res.success) throw new Error(res.error ?? `chrome.${method} failed`)
+    return res.result
+  }
+
   throw new Error(`Unknown proxy call: ${api}.${method}`)
 }
 
