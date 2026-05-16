@@ -202,9 +202,15 @@ export async function startAgent(agentName: string): Promise<void> {
   const schedulerConfig = agentCtx.config?.scheduler ?? { type: "none" }
   startScheduler(agentName, schedulerConfig)
 
-  // For scheduler type "none", run once and keep status as "running" for manual triggers
-  // For interval/cron, also keep status as "running" since scheduler will trigger repeatedly
-  // Only set to "stopped" when explicitly stopped by user or on error
+  // Resolve input_ref for non-dataset types at startup — mirrors Node.js runtime
+  // dataset type: skip here, items are claimed per-trigger to avoid holding a lock
+  const inputRef = extractInputRef(agentCtx.config)
+  if (inputRef && inputRef.type !== "dataset") {
+    bgLog.info(`startAgent "${agentName}" — resolving input_ref: type=${inputRef.type} value=${inputRef.value}`)
+    const resolved = await resolveInputRef(inputRef, agentCtx)
+    agentCtx = { ...agentCtx, input: resolved }
+    _agentCtx.set(agentName, agentCtx)
+  }
 
   // Run agent in sandbox — fire and forget (scheduler handles repeats via alarms)
   runInSandbox({
@@ -419,6 +425,19 @@ export async function triggerAgent(agentName: string): Promise<void> {
     }
   }
 
+  // Resolve input_ref before running — mirrors Node.js runtime trigger behavior
+  const inputRef = extractInputRef(agentCtx.config)
+  bgLog.info(`Trigger for "${agentName}" — input_ref=${JSON.stringify(inputRef)}`)
+  if (inputRef) {
+    const resolved = await resolveInputRef(inputRef, agentCtx)
+    bgLog.info(`Trigger for "${agentName}" — ctx.input resolved: ${resolved === null ? "null (no pending items)" : typeof resolved}`)
+    if (resolved === null) {
+      bgLog.info(`Trigger for "${agentName}" — no pending items, skipping`)
+      return
+    }
+    agentCtx = { ...agentCtx, input: resolved }
+  }
+
   bgLog.info(`Trigger: running "${agentName}" in sandbox`)
 
   runInSandbox({
@@ -468,4 +487,69 @@ export async function applyConfigUpdate(
   startScheduler(agentName, schedulerConfig)
 
   bgLog.info(`config_updated applied for "${agentName}" — ctx updated in memory and storage`)
+}
+
+// ─── Input ref helpers (mirrors Node.js runtime) ──────────────────────────────
+
+function extractInputRef(config: unknown): { type: string; value: string } | null {
+  const ref = (config as { input?: { input_ref?: { type: string; value: string } } })?.input?.input_ref ?? null
+  bgLog.info(`[runtime] extractInputRef: input_ref=${JSON.stringify(ref)}`)
+  return ref
+}
+
+async function resolveInputRef(
+  inputRef: { type: string; value: string },
+  agentCtx: Pick<Context, "input" | "config" | "env" | "meta">
+): Promise<unknown> {
+  if (inputRef.type !== "dataset") {
+    bgLog.info(`[runtime] resolveInputRef: unknown type "${inputRef.type}"`)
+    return null
+  }
+
+  const stoppedUrl = agentCtx.meta?.runtime?.stopped_url as string | undefined
+  const base = stoppedUrl
+    ? stoppedUrl.replace(/\/stopped$/, "")
+    : `${API_URLS.AGENT_BASE}/agents`
+
+  const { accessToken } = await getTokens()
+  const fetchUrl = `${base}/dataset/${inputRef.value}/next-item`
+  bgLog.info(`[runtime] resolveInputRef: GET ${fetchUrl}`)
+
+  try {
+    const res = await fetch(fetchUrl, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: accessToken } : {}),
+      },
+    })
+    const rawBody = await res.text().catch(() => "")
+    bgLog.info(`[runtime] resolveInputRef: response ${res.status} — ${rawBody.slice(0, 500)}`)
+
+    if (!res.ok) {
+      bgLog.info(`[runtime] resolveInputRef: dataset fetch failed (${res.status})`)
+      return null
+    }
+
+    let data: { success: boolean; item?: { content?: unknown; id?: number } | null }
+    try { data = JSON.parse(rawBody) } catch {
+      bgLog.info("[runtime] resolveInputRef: failed to parse response JSON")
+      return null
+    }
+
+    if (!data.success || !data.item) {
+      bgLog.info(`[runtime] resolveInputRef: no pending items in dataset ${inputRef.value}`)
+      return null
+    }
+
+    if (data.item.content === null || data.item.content === undefined) {
+      bgLog.info(`[runtime] resolveInputRef: item claimed (id=${data.item.id}) but R2 content is null`)
+      return null
+    }
+
+    bgLog.info(`[runtime] resolveInputRef: ctx.input resolved — ${JSON.stringify(data.item.content).slice(0, 200)}`)
+    return data.item.content
+  } catch (e) {
+    bgLog.error("[runtime] resolveInputRef: failed to fetch dataset item:", e instanceof Error ? e.message : String(e))
+    return null
+  }
 }
