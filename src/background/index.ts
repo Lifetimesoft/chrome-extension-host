@@ -340,10 +340,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       if (method === "scripting.executeScript") {
         const raw = args[0] as Record<string, unknown>
-        // func is serialized as string from sandbox — reconstruct it
+        // func was serialized as string in sandbox (functions can't cross postMessage).
+        // Use chrome.scripting with world:MAIN and pass the function body as a string arg,
+        // then eval it inside the target tab — tabs have no CSP restriction on scripting injection.
         if (typeof raw["func"] === "string") {
-          // eslint-disable-next-line no-new-func
-          raw["func"] = new Function(`return (${raw["func"] as string})`)() as () => unknown
+          const funcStr = raw["func"] as string
+          const injectionArgs = (raw["args"] as unknown[]) ?? []
+          const target = raw["target"] as chrome.scripting.InjectionTarget
+          return chrome.scripting.executeScript({
+            target,
+            world: "MAIN",
+            func: (serializedFn: string, fnArgs: unknown[]) => {
+              // eslint-disable-next-line no-new-func
+              const fn = new Function(`return (${serializedFn})`)() as (...a: unknown[]) => unknown
+              return fn(...fnArgs)
+            },
+            args: [funcStr, injectionArgs],
+          })
         }
         return chrome.scripting.executeScript(raw as chrome.scripting.ScriptInjection<unknown[], unknown>)
       }
