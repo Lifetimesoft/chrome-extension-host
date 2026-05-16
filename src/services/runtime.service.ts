@@ -41,6 +41,68 @@ const _running = new Set<string>()
 // Track agentCtx per running agent — needed for in-process trigger/config_updated
 const _agentCtx = new Map<string, Pick<Context, "input" | "config" | "env" | "meta">>()
 
+// Pending image/video job promises — keyed by job_id
+// Resolved when DO sends image_ready / video_ready via WebSocket (mirrors Node runtime)
+type PendingJobEntry = {
+  resolve: (url: string) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
+const _pendingImageJobs = new Map<string, PendingJobEntry>()
+const _pendingVideoJobs = new Map<string, PendingJobEntry>()
+
+/**
+ * Resolve or reject a pending image/video job — called by heartbeat.service when
+ * the DO sends image_ready / video_ready via WebSocket.
+ */
+export function resolvePendingJob(
+  kind: "image" | "video",
+  jobId: string,
+  success: boolean,
+  url: string | null,
+  message: string | null
+): void {
+  const map = kind === "image" ? _pendingImageJobs : _pendingVideoJobs
+  const pending = map.get(jobId)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  map.delete(jobId)
+  if (success && url) {
+    pending.resolve(url)
+  } else {
+    pending.reject(new Error(`${kind} generation failed: ${message ?? "unknown error"}`))
+  }
+}
+
+/**
+ * Get the current run_id for an agent — used by AI proxy to attach run_id to requests
+ * so the DO can notify back via WebSocket (image_ready / video_ready).
+ */
+export function getRunId(agentName: string): string | undefined {
+  return _agentCtx.get(agentName)?.meta?.run_id
+}
+
+/**
+ * Register a pending image/video job and return a Promise that resolves when
+ * the DO sends image_ready / video_ready via WebSocket.
+ * Mirrors Node runtime's pendingImageJobs / pendingVideoJobs pattern.
+ */
+export function registerPendingJob(
+  kind: "image" | "video",
+  jobId: string
+): Promise<string> {
+  const map = kind === "image" ? _pendingImageJobs : _pendingVideoJobs
+  const timeoutMs = kind === "image" ? 120_000 : 300_000
+
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      map.delete(jobId)
+      reject(new Error(`${kind} job ${jobId} timed out after ${timeoutMs / 1000}s`))
+    }, timeoutMs)
+    map.set(jobId, { resolve, reject, timer })
+  })
+}
+
 // ─── SaaS API calls ───────────────────────────────────────────────────────────
 
 function getClientInfo() {
@@ -472,10 +534,21 @@ export async function applyConfigUpdate(
     agentCtx = stored
   }
 
-  // Update ctx — same as runtime-chrome.ts onWsMessage config_updated
+  // Update ctx — same as runtime.ts onWsMessage config_updated
   agentCtx.config = config as Context["config"]
   if ((config as { env?: Record<string, unknown> }).env) {
     agentCtx.env = (config as { env: Record<string, unknown> }).env
+  }
+
+  // Re-resolve input_ref after config change — mirrors Node.js runtime config_updated handler
+  // non-dataset: resolve once now; dataset: reset to null (items claimed per-trigger)
+  const updatedInputRef = extractInputRef(config)
+  if (updatedInputRef && updatedInputRef.type !== "dataset") {
+    bgLog.info(`config_updated "${agentName}" — re-resolving input_ref: type=${updatedInputRef.type}`)
+    const resolved = await resolveInputRef(updatedInputRef, agentCtx)
+    agentCtx.input = resolved
+  } else {
+    agentCtx.input = null
   }
 
   // Persist updated ctx back to storage so next SW wake-up gets the new config

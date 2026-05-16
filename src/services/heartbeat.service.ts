@@ -17,7 +17,7 @@
 import { bgLog } from "../utils/logger"
 import { getTokens } from "../storage/storage"
 import { refreshTokenIfNeeded } from "./auth.service"
-import { triggerAgent, applyConfigUpdate } from "./runtime.service"
+import { triggerAgent, applyConfigUpdate, resolvePendingJob } from "./runtime.service"
 import { API_URLS, TIMING } from "../constants"
 import type { HeartbeatConnection } from "../types"
 
@@ -156,11 +156,18 @@ async function connectOnce(
 
 function handleMessage(agentName: string, runId: string, data: string): void {
   try {
-    const msg = JSON.parse(data) as { type?: string; [key: string]: unknown }
+    const msg = JSON.parse(data) as {
+      type?: string
+      config?: unknown
+      job_id?: string
+      image_url?: string | null
+      success?: boolean
+      message?: string | null
+      [key: string]: unknown
+    }
 
     if (msg.type === "trigger") {
       bgLog.info(`Heartbeat: trigger received for "${agentName}"`)
-      // Call triggerAgent directly instead of sending message to background
       triggerAgent(agentName).catch((e: unknown) => {
         bgLog.error(`Heartbeat: triggerAgent failed for "${agentName}":`, e instanceof Error ? e.message : String(e))
       })
@@ -168,11 +175,19 @@ function handleMessage(agentName: string, runId: string, data: string): void {
 
     if (msg.type === "config_updated") {
       bgLog.info(`Heartbeat: config_updated received for "${agentName}"`)
-      // Call applyConfigUpdate directly instead of sending message to background
-      const config = msg.config as Record<string, unknown>
-      applyConfigUpdate(agentName, config).catch((e: unknown) => {
+      applyConfigUpdate(agentName, msg.config as Record<string, unknown>).catch((e: unknown) => {
         bgLog.error(`Heartbeat: config update failed for "${agentName}":`, e instanceof Error ? e.message : String(e))
       })
+    }
+
+    if (msg.type === "image_ready" && msg.job_id) {
+      bgLog.info(`Heartbeat: image_ready for job ${msg.job_id}`)
+      resolvePendingJob("image", msg.job_id, msg.success ?? false, msg.image_url ?? null, msg.message ?? null)
+    }
+
+    if (msg.type === "video_ready" && msg.job_id) {
+      bgLog.info(`Heartbeat: video_ready for job ${msg.job_id}`)
+      resolvePendingJob("video", msg.job_id, msg.success ?? false, msg.image_url ?? null, msg.message ?? null)
     }
 
   } catch (e) {

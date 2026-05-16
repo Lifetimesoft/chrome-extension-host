@@ -11,7 +11,7 @@
 import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
 import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
-import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning, stopAllAgents } from "../services/runtime.service"
+import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning, stopAllAgents, getRunId, registerPendingJob } from "../services/runtime.service"
 import { handleOffscreenMessage, ensureOffscreenAlive } from "../services/sandbox.service"
 import { handleAlarm } from "../services/scheduler.service"
 import { getTokens } from "../storage/storage"
@@ -319,15 +319,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!accessToken) throw new Error("Not logged in")
 
       const req = (args[0] ?? {}) as Record<string, unknown>
-      const aiUrl = `${API_URLS.AGENT_BASE}/ai/${method}`
 
+      // Resolve run_id for the agent so DO can notify back via WS (image_ready/video_ready)
+      const runId = getRunId(agentName)
+
+      const aiUrl = `${API_URLS.AGENT_BASE}/ai/${method}`
       const res = await fetch(aiUrl, {
         method:  "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization:  accessToken,
         },
-        body: JSON.stringify({ ...req, agent_name: agentName }),
+        body: JSON.stringify({ ...req, agent_name: agentName, ...(runId ? { run_id: runId } : {}) }),
       })
 
       if (!res.ok) {
@@ -335,8 +338,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         throw new Error(`AI ${method} failed (${res.status}): ${text}`)
       }
 
-      const data = await res.json() as { success: boolean; result?: unknown; message?: string }
+      const data = await res.json() as { success: boolean; result?: unknown; job_id?: string; message?: string }
       if (!data.success) throw new Error(data.message ?? `AI ${method} rejected`)
+
+      // image/video: wait for WS callback (image_ready / video_ready) instead of returning immediately
+      if ((method === "image" || method === "video") && data.job_id) {
+        bgLog.info(`AI ${method} job ${data.job_id} submitted — waiting for ${method}_ready...`)
+        return registerPendingJob(method as "image" | "video", data.job_id)
+      }
+
       return data.result
     }
 
