@@ -28,6 +28,7 @@ async function ensureDir(dir) {
 
 await ensureDir("dist/popup")
 await ensureDir("dist/dashboard")
+await ensureDir("dist/agent-detail")
 await ensureDir("dist/logs")
 await ensureDir("dist/offscreen")
 await ensureDir("dist/sandbox")
@@ -53,6 +54,13 @@ await build({
   outfile: "dist/dashboard/index.js",
 })
 
+// Bundle agent detail page script
+await build({
+  ...sharedOptions,
+  entryPoints: ["src/agent-detail/index.ts"],
+  outfile: "dist/agent-detail/index.js",
+})
+
 // Bundle logs page script
 await build({
   ...sharedOptions,
@@ -68,9 +76,10 @@ await build({
 })
 
 // Copy HTML files to dist
-await copyFile("src/popup/index.html",     "dist/popup/index.html")
-await copyFile("src/dashboard/index.html", "dist/dashboard/index.html")
-await copyFile("src/logs/index.html",      "dist/logs/index.html")
+await copyFile("src/popup/index.html",        "dist/popup/index.html")
+await copyFile("src/dashboard/index.html",    "dist/dashboard/index.html")
+await copyFile("src/agent-detail/index.html", "dist/agent-detail/index.html")
+await copyFile("src/logs/index.html",         "dist/logs/index.html")
 await copyFile("src/offscreen/index.html", "dist/offscreen/index.html")
 await copyFile("src/sandbox/index.html",   "dist/sandbox/index.html")
 

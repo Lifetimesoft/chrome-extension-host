@@ -1,13 +1,5 @@
 /// <reference types="chrome" />
 
-/**
- * Dashboard Script — full-tab agent management UI
- *
- * Sections:
- * - Installed Agents: list with status badges, start/stop buttons
- * - Settings: disconnect/reconnect/logout
- */
-
 import type { InstalledAgent } from "../storage/storage"
 
 interface StatusResponse {
@@ -38,6 +30,17 @@ async function sendMsg<T>(message: object): Promise<T> {
 
 let _agents: InstalledAgent[] = []
 let _loggedIn = false
+let _devUrls: Record<string, string> = {}
+
+async function loadDevUrls(agents: InstalledAgent[]): Promise<void> {
+  const keys = agents.map(a => `lts_dev_bundle_${a.name}`)
+  if (keys.length === 0) { _devUrls = {}; return }
+  const stored = await chrome.storage.local.get(keys)
+  _devUrls = {}
+  for (const a of agents) {
+    _devUrls[a.name] = (stored[`lts_dev_bundle_${a.name}`] as string) ?? ""
+  }
+}
 
 // ─── Render agents ────────────────────────────────────────────────────────────
 
@@ -66,11 +69,14 @@ function renderAgents(agents: InstalledAgent[]): void {
   }
 
   empty.style.display = "none"
-  container.innerHTML = agents.map(agent => `
-    <div class="agent-card" data-name="${escHtml(agent.name)}">
+  container.innerHTML = agents.map(agent => {
+    const devUrl = _devUrls[agent.name] ?? ""
+    const devBadge = devUrl ? `<span class="dev-active-badge">⚡ dev</span>` : ""
+    return `
+    <div class="agent-card" data-name="${escHtml(agent.name)}" style="cursor:pointer;">
       <div class="agent-card-header">
         <div class="agent-info">
-          <div class="agent-name">${escHtml(agent.name)}</div>
+          <div class="agent-name">${escHtml(agent.name)}${devBadge}</div>
           <div class="agent-meta">v${escHtml(agent.version)} · installed ${new Date(agent.installed_at).toLocaleDateString()}</div>
         </div>
         <div class="agent-actions">
@@ -87,23 +93,26 @@ function renderAgents(agents: InstalledAgent[]): void {
               <line x1="16" y1="17" x2="8" y2="17"/>
             </svg>
           </button>
-          <button class="btn-action btn-uninstall" data-action="uninstall" data-name="${escHtml(agent.name)}" title="Uninstall">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-              <path d="M10 11v6M14 11v6"/>
-              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-            </svg>
-          </button>
         </div>
       </div>
       ${agent.run_id ? `<div class="agent-run-id">run_id: <code>${escHtml(agent.run_id)}</code></div>` : ""}
     </div>
-  `).join("")
+  `}).join("")
 
-  // Attach event listeners
+  // Button clicks — stop propagation so card click doesn't fire
   container.querySelectorAll<HTMLButtonElement>("[data-action]").forEach(btn => {
-    btn.addEventListener("click", () => handleAgentAction(btn.dataset.action!, btn.dataset.name!, btn))
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      handleAgentAction(btn.dataset.action!, btn.dataset.name!, btn)
+    })
+  })
+
+  // Card click → navigate to agent detail page
+  container.querySelectorAll<HTMLDivElement>(".agent-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const name = card.dataset.name!
+      location.href = `../agent-detail/index.html?name=${encodeURIComponent(name)}`
+    })
   })
 }
 
@@ -111,19 +120,15 @@ function renderAgents(agents: InstalledAgent[]): void {
 
 async function handleAgentAction(action: string, name: string, btn?: HTMLButtonElement): Promise<void> {
   setNotification("", false)
-
   if (btn) btn.disabled = true
 
   try {
     if (action === "start") {
       setNotification(`Starting "${name}"...`, false)
       const res = await sendMsg<GenericResponse>({ type: "agent_start", name }).catch(e => ({
-        success: false,
-        error: e instanceof Error ? e.message : String(e),
+        success: false, error: e instanceof Error ? e.message : String(e),
       }))
-      if (!res.success) {
-        setNotification(`Failed to start "${name}": ${res.error ?? "unknown error"}`, true)
-      }
+      if (!res.success) setNotification(`Failed to start "${name}": ${res.error ?? "unknown error"}`, true)
     }
 
     if (action === "stop") {
@@ -137,27 +142,9 @@ async function handleAgentAction(action: string, name: string, btn?: HTMLButtonE
       return
     }
 
-    if (action === "uninstall") {
-      if (!confirm(`Uninstall agent "${name}"? This will stop it if running.`)) {
-        if (btn) btn.disabled = false
-        return
-      }
-      const res = await sendMsg<GenericResponse>({ type: "agent_uninstall", name }).catch(e => ({
-        success: false,
-        error: e instanceof Error ? e.message : String(e),
-      }))
-      if (!res.success) {
-        setNotification(`Failed to uninstall "${name}": ${res.error ?? "unknown error"}`, true)
-      }
-    }
-
-    // Refresh status after action
     await refreshStatus()
   } finally {
-    // If the button is still in the DOM (not replaced by refreshStatus), re-enable it
-    if (btn && document.body.contains(btn)) {
-      btn.disabled = false
-    }
+    if (btn && document.body.contains(btn)) btn.disabled = false
   }
 }
 
@@ -167,10 +154,9 @@ async function refreshStatus(): Promise<void> {
   const status = await sendMsg<StatusResponse>({ type: "get_status" }).catch(
     () => ({ loggedIn: false, agents: [] } as StatusResponse)
   )
-
   _loggedIn = status.loggedIn
   _agents   = status.agents
-
+  await loadDevUrls(_agents)
   renderAgents(_agents)
   updateSettingsSection()
 }
@@ -192,13 +178,11 @@ function setNotification(text: string, isError: boolean): void {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run(): Promise<void> {
-  // Show extension version in header
   const manifest = chrome.runtime.getManifest()
   el<HTMLSpanElement>("ext-version").textContent = `(v${manifest.version})`
 
   await refreshStatus()
 
-  // ── Install agent ──
   const installBtn  = el<HTMLButtonElement>("install-btn")
   const installName = el<HTMLInputElement>("install-name")
   const installVer  = el<HTMLInputElement>("install-version")
@@ -231,7 +215,6 @@ async function run(): Promise<void> {
   installName.addEventListener("keydown", (e) => { if (e.key === "Enter") void doInstall() })
   installVer.addEventListener("keydown",  (e) => { if (e.key === "Enter") void doInstall() })
 
-  // ── Logout ──
   el<HTMLButtonElement>("logout-btn").addEventListener("click", async () => {
     if (!confirm("Sign out? All running agents will be stopped.")) return
     await sendMsg({ type: "auth_logout" }).catch(() => {})
@@ -239,17 +222,14 @@ async function run(): Promise<void> {
     setNotification("Signed out", false)
   })
 
-  // ── Refresh button ──
   el<HTMLButtonElement>("refresh-btn").addEventListener("click", async () => {
     await refreshStatus()
   })
 
-  // ── Auto-refresh every 5s ──
   setInterval(() => { void refreshStatus() }, 5_000)
 
-  // ── Listen for storage changes (real-time agent status updates) ──
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes["lts_installed_agents"]) {
+    if (area === "local" && (changes["lts_installed_agents"] || Object.keys(changes).some(k => k.startsWith("lts_dev_bundle_")))) {
       void refreshStatus()
     }
   })

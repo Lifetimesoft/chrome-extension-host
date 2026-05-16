@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Detail — LifetimeSoft</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --green: #15803d; --green-light: #16a34a; --green-bg: #f0fdf4;
+      --green-border: #dcfce7; --green-dim: #bbf7d0;
+      --text: #111827; --text-muted: #6b7280; --border: #e5e7eb;
+      --bg: #f9fafb; --card-bg: #fff;
+    }
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+    .layout { display: flex; flex-direction: column; min-height: 100vh; }
+    .topbar { background: linear-gradient(to bottom, #f0fdf4, #fff); border-bottom: 1px solid #dcfce7; padding: 0 24px; height: 56px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .topbar-logo { width: 32px; height: 32px; background: #dfffeb; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .topbar-title { font-size: 16px; font-weight: 700; color: #14532d; }
+    .topbar-sub { font-size: 12px; color: #31b361; margin-top: 1px; }
+    .topbar-spacer { flex: 1; }
+    .btn-back { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 7px; background: #fff; font-size: 12px; color: var(--text-muted); cursor: pointer; text-decoration: none; transition: background 0.15s, color 0.15s; }
+    .btn-back:hover { background: var(--green-bg); color: var(--green); border-color: var(--green-dim); }
+    .main { flex: 1; max-width: 700px; width: 100%; margin: 0 auto; padding: 28px 24px; }
+    .notification { display: none; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+    .notification.info  { display: block; background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
+    .notification.error { display: block; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+    .header-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 16px; }
+    .header-icon { width: 48px; height: 48px; background: var(--green-bg); border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .header-info { flex: 1; min-width: 0; }
+    .header-name { font-size: 18px; font-weight: 700; color: var(--text); }
+    .header-meta { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+    .header-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+    .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+    .badge-running { background: #dcfce7; color: #15803d; }
+    .badge-stopped { background: #f3f4f6; color: #6b7280; }
+    .badge-error   { background: #fef2f2; color: #dc2626; }
+    .btn-action { display: inline-flex; align-items: center; gap: 4px; padding: 7px 14px; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: background 0.15s; }
+    .btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-start { background: var(--green-bg); color: var(--green); border-color: var(--green-dim); }
+    .btn-start:hover:not(:disabled) { background: var(--green-dim); }
+    .btn-stop  { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+    .btn-stop:hover:not(:disabled)  { background: #ffedd5; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+    .card-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+    .card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .card-body  { padding: 18px; }
+    .info-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 18px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: var(--text-muted); }
+    .info-value { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; color: var(--text); word-break: break-all; text-align: right; max-width: 60%; }
+    .dev-card { border-color: #fcd34d; }
+    .dev-card .card-header { background: #fffbeb; border-bottom-color: #fde68a; }
+    .dev-title { color: #92400e; }
+    .dev-desc  { font-size: 12px; color: #a16207; margin-bottom: 12px; line-height: 1.5; }
+    .dev-row   { display: flex; gap: 8px; align-items: center; }
+    .dev-input { flex: 1; padding: 8px 12px; border: 1px solid #fcd34d; border-radius: 7px; font-size: 12px; font-family: "SF Mono", "Fira Code", monospace; background: #fffbeb; color: var(--text); outline: none; }
+    .dev-input:focus { border-color: #f59e0b; }
+    .dev-input::placeholder { color: #d97706; opacity: 0.6; }
+    .btn-dev-save  { padding: 8px 14px; border-radius: 7px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid #fcd34d; background: #fef3c7; color: #92400e; white-space: nowrap; }
+    .btn-dev-save:hover { background: #fde68a; }
+    .btn-dev-clear { padding: 8px 12px; border-radius: 7px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: #fff; color: var(--text-muted); }
+    .btn-dev-clear:hover { background: #f3f4f6; }
+    .dev-active { margin-top: 10px; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: "SF Mono", "Fira Code", monospace; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; display: none; word-break: break-all; }
+    .dev-active.show { display: block; }
+    .danger-card { border-color: #fecaca; }
+    .danger-card .card-header { background: #fff5f5; border-bottom-color: #fecaca; }
+    .danger-title { color: #dc2626; }
+    .btn-danger { width: 100%; padding: 8px 14px; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid #fecaca; background: #fff; color: #dc2626; transition: background 0.15s; }
+    .btn-danger:hover { background: #fef2f2; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <div class="topbar">
+    <div class="topbar-logo">
+      <img src="https://static.lifetimesoft.com/img/favicon.png" width="22" height="22" alt="logo" style="border-radius:4px;display:block;" />
+    </div>
+    <div>
+      <div class="topbar-title">Lifetimesoft Agent Host</div>
+      <div class="topbar-sub">Agent Detail</div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <a id="back-btn" href="../dashboard/index.html" class="btn-back">← Dashboard</a>
+  </div>
+
+  <div class="main">
+    <div id="notification" class="notification"></div>
+
+    <div class="header-card">
+      <div class="header-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      </div>
+      <div class="header-info">
+        <div class="header-name" id="agent-name">—</div>
+        <div class="header-meta" id="agent-meta">—</div>
+      </div>
+      <div class="header-actions">
+        <span id="status-badge" class="badge badge-stopped">○ Stopped</span>
+        <button id="toggle-btn" class="btn-action btn-start">▶ Start</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span class="card-title">Info</span>
+      </div>
+      <div id="info-rows"></div>
+    </div>
+
+    <div class="card dev-card">
+      <div class="card-header">
+        <span style="font-size:14px;">⚡</span>
+        <span class="card-title dev-title">Dev Bundle URL</span>
+      </div>
+      <div class="card-body">
+        <p class="dev-desc">Override bundle with local dev server. Extension fetches from this URL on every run — no cache, no registry push needed.<br>Run <code style="background:#fde68a;padding:1px 4px;border-radius:3px;">npm run dev:serve</code> in your agent project first.</p>
+        <div class="dev-row">
+          <input id="dev-url-input" class="dev-input" type="text" placeholder="http://localhost:7700/index.js" />
+          <button id="dev-save-btn" class="btn-dev-save">Save</button>
+          <button id="dev-clear-btn" class="btn-dev-clear">Clear</button>
+        </div>
+        <div id="dev-active" class="dev-active"></div>
+      </div>
+    </div>
+
+    <div class="card danger-card">
+      <div class="card-header">
+        <span class="card-title danger-title">Danger Zone</span>
+      </div>
+      <div class="card-body">
+        <button id="uninstall-btn" class="btn-danger">🗑 Uninstall Agent</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="module" src="index.js"></script>
+</body>
+</html>

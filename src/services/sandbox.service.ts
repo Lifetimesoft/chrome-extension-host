@@ -75,7 +75,17 @@ function bundleCacheKey(name: string, version: string): string {
   return `${name}@${version}`
 }
 
-async function fetchAgentBundle(name: string, version: string): Promise<string> {
+async function fetchAgentBundle(name: string, version: string, devBundleUrl?: string): Promise<string> {
+  // Dev mode: fetch directly from local URL, skip cache so every run gets latest code
+  if (devBundleUrl) {
+    bgLog.info(`[dev] Fetching agent bundle "${name}" from ${devBundleUrl}`)
+    const res = await fetch(devBundleUrl, { cache: "no-store" })
+    if (!res.ok) throw new Error(`[dev] Failed to fetch bundle from ${devBundleUrl} (${res.status})`)
+    const code = await res.text()
+    bgLog.info(`[dev] Bundle loaded (${code.length} bytes) — not cached`)
+    return code
+  }
+
   const key = bundleCacheKey(name, version)
   if (_bundleCache.has(key)) return _bundleCache.get(key)!
 
@@ -254,7 +264,10 @@ export async function runInSandbox(options: SandboxRunOptions): Promise<void> {
 
   await ensureOffscreen()
 
-  const code = await fetchAgentBundle(agentName, agentVersion)
+  // Check for dev bundle URL in chrome.storage.local — set via dashboard Dev panel
+  const devStored = await chrome.storage.local.get(`lts_dev_bundle_${agentName}`)
+  const devBundleUrl = (devStored[`lts_dev_bundle_${agentName}`] as string | undefined) || undefined
+  const code = await fetchAgentBundle(agentName, agentVersion, devBundleUrl)
   const { accessToken, refreshToken } = await getTokens()
 
   const requestId = nextRunId()

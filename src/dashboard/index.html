@@ -110,6 +110,7 @@
       border-radius: 10px;
       padding: 14px 16px;
       transition: border-color 0.15s;
+      cursor: pointer;
     }
     .agent-card:hover { border-color: var(--green-dim); }
 
@@ -130,6 +131,63 @@
     .agent-run-id code {
       font-family: "SF Mono", "Fira Code", monospace;
       font-size: 10px; color: #374151;
+    }
+
+    /* ── Dev panel ── */
+    .agent-dev-panel {
+      display: none;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .agent-dev-panel.open { display: block; }
+    .dev-panel-label {
+      font-size: 11px; font-weight: 600; color: #b45309;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .dev-panel-row {
+      display: flex; gap: 6px; align-items: center;
+    }
+    .dev-panel-input {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid #fcd34d;
+      border-radius: 6px;
+      font-size: 12px; font-family: "SF Mono", "Fira Code", monospace;
+      color: var(--text);
+      background: #fffbeb;
+      outline: none;
+    }
+    .dev-panel-input:focus { border-color: #f59e0b; }
+    .dev-panel-input::placeholder { color: #d97706; opacity: 0.6; }
+    .btn-dev-save {
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px; font-weight: 500;
+      cursor: pointer;
+      border: 1px solid #fcd34d;
+      background: #fef3c7; color: #92400e;
+      white-space: nowrap;
+    }
+    .btn-dev-save:hover { background: #fde68a; }
+    .btn-dev-clear {
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: #fff; color: var(--text-muted);
+    }
+    .btn-dev-clear:hover { background: #f3f4f6; }
+    .dev-active-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px; font-weight: 600;
+      background: #fef3c7; color: #92400e;
+      border: 1px solid #fcd34d;
+      margin-left: 6px;
     }
 
     .agent-actions {
@@ -282,6 +340,14 @@
       border-color: #fecaca; color: #dc2626; background: #fff;
     }
     .btn-settings-danger:hover { background: #fef2f2; }
+    .dev-active-badge {
+      display: inline-block;
+      padding: 1px 6px; border-radius: 4px;
+      font-size: 10px; font-weight: 600;
+      background: #fef3c7; color: #92400e;
+      border: 1px solid #fcd34d;
+      margin-left: 6px;
+    }
   </style>
 </head>
 <body>
