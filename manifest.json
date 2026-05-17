@@ -9,7 +9,8 @@
     "tabs",
     "scripting",
     "offscreen",
-    "activeTab"
+    "activeTab",
+    "debugger"
   ],
   "host_permissions": [
     "https://app.lifetimesoft.com/*",

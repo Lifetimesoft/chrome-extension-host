@@ -129,6 +129,9 @@ function buildChromeShim(agentName) {
         return chromeProxy("scripting", "executeScript", [serialized], 10 * 60_000)
       },
     },
+    debugger: {
+      click: (payload) => chromeProxy("debugger", "click", [payload]),
+    },
   }
 }
 

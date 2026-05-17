@@ -9,7 +9,7 @@
  * - Throws on unrecoverable auth failures
  */
 
-import { getTokens, saveTokens } from "../storage/storage"
+import { clearTokens, getTokens, saveTokens } from "../storage/storage"
 
 const AUTH_URL = "https://app.lifetimesoft.com/ex-api"
 
@@ -26,6 +26,7 @@ async function refreshTokens(): Promise<string> {
   const { accessToken, refreshToken } = await getTokens()
 
   if (!refreshToken) {
+    await clearTokens()
     throw new Error("Unauthorized — no refresh token available")
   }
 
@@ -36,12 +37,14 @@ async function refreshTokens(): Promise<string> {
   })
 
   if (!res.ok) {
+    await clearTokens()
     throw new Error(`Token refresh failed (${res.status})`)
   }
 
   const data = await res.json() as { success: boolean; access_token?: string; refresh_token?: string; message?: string }
 
   if (!data.success || !data.access_token) {
+    await clearTokens()
     throw new Error(data.message ?? "Session expired — please log in again")
   }
 

@@ -584,15 +584,13 @@ async function resolveInputRef(
     ? stoppedUrl.replace(/\/stopped$/, "")
     : `${API_URLS.AGENT_BASE}/agents`
 
-  const { accessToken } = await getTokens()
   const fetchUrl = `${base}/dataset/${inputRef.value}/next-item`
   bgLog.info(`[runtime] resolveInputRef: GET ${fetchUrl}`)
 
   try {
-    const res = await fetch(fetchUrl, {
+    const res = await apiCall(fetchUrl, {
       headers: {
         "Content-Type": "application/json",
-        ...(accessToken ? { Authorization: accessToken } : {}),
       },
     })
     const rawBody = await res.text().catch(() => "")

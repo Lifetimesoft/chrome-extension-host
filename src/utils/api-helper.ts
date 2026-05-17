@@ -9,7 +9,7 @@
  * 3. Throw error if refresh fails
  */
 
-import { getTokens, saveTokens } from "../storage/storage"
+import { clearTokens, getTokens, saveTokens } from "../storage/storage"
 import { bgLog } from "./logger"
 import { API_URLS } from "../constants"
 import { AuthError } from "../types"
@@ -46,6 +46,8 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
 
   if (needsRefresh) {
     if (!refreshToken) {
+      await clearTokens()
+      bgLog.warn("Session expired — no refresh token available, tokens cleared")
       throw new AuthError("Session expired — please log in again")
     }
 
@@ -63,6 +65,7 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
       })
 
       if (!refreshRes.ok) {
+        await clearTokens()
         throw new AuthError("Token refresh failed")
       }
 
@@ -74,6 +77,7 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
       }
 
       if (!refreshData.success || !refreshData.access_token) {
+        await clearTokens()
         throw new AuthError(refreshData.message || "Token refresh rejected by server")
       }
 
@@ -90,6 +94,7 @@ export async function apiCall(url: string, options: RequestInit = {}): Promise<R
         },
       })
     } catch (e) {
+      await clearTokens()
       bgLog.error("Token refresh error:", e instanceof Error ? e.message : String(e))
       throw new AuthError("Authentication failed — please log in again")
     }

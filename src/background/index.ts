@@ -361,6 +361,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return chrome.scripting.executeScript(raw as chrome.scripting.ScriptInjection<unknown[], unknown>)
       }
 
+      if (method === "debugger.click") {
+        const { tabId, x, y } = args[0] as { tabId: number; x: number; y: number }
+        const target = { tabId }
+        const version = "1.3"
+
+        const attach = () => new Promise<void>((resolve, reject) => {
+          chrome.debugger.attach(target, version, () => {
+            const lastError = chrome.runtime.lastError
+            if (lastError && !lastError.message?.includes("Another debugger is already attached")) {
+              reject(new Error(lastError.message))
+              return
+            }
+            resolve()
+          })
+        })
+
+        const sendCommand = (command: string, params: Record<string, unknown>) =>
+          new Promise<void>((resolve, reject) => {
+            chrome.debugger.sendCommand(target, command, params, () => {
+              const lastError = chrome.runtime.lastError
+              if (lastError) reject(new Error(lastError.message))
+              else resolve()
+            })
+          })
+
+        const detach = () => new Promise<void>((resolve) => {
+          chrome.debugger.detach(target, () => resolve())
+        })
+
+        await attach()
+        try {
+          await sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" })
+          await sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 })
+          await sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 })
+        } finally {
+          await detach()
+        }
+        return true
+      }
+
       throw new Error(`Unsupported chrome method: ${method}`)
     }
 

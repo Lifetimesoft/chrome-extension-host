@@ -189,6 +189,7 @@ export async function refreshTokenIfNeeded(): Promise<boolean> {
 
   if (!refreshToken) {
     bgLog.warn("Access token expired but no refresh token available")
+    await clearTokens()
     return false
   }
 
@@ -201,6 +202,7 @@ export async function refreshTokenIfNeeded(): Promise<boolean> {
 
     if (!res.ok) {
       bgLog.warn(`Token refresh failed (${res.status})`)
+      await clearTokens()
       return false
     }
 
@@ -208,6 +210,7 @@ export async function refreshTokenIfNeeded(): Promise<boolean> {
 
     if (!data.success || !data.access_token) {
       bgLog.warn("Token refresh rejected by server")
+      await clearTokens()
       return false
     }
 
@@ -216,6 +219,7 @@ export async function refreshTokenIfNeeded(): Promise<boolean> {
     return true
   } catch (e) {
     bgLog.error("Token refresh error:", e instanceof Error ? e.message : String(e))
+    await clearTokens()
     return false
   }
 }
