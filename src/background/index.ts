@@ -361,6 +361,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return chrome.scripting.executeScript(raw as chrome.scripting.ScriptInjection<unknown[], unknown>)
       }
 
+      if (method === "fetch.dataUrl") {
+        const url = args[0] as string
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`Fetch failed (${res.status})`)
+        const blob = await res.blob()
+        const buffer = await blob.arrayBuffer()
+        const bytes = new Uint8Array(buffer)
+        let binary = ""
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+        }
+        return {
+          dataUrl: `data:${blob.type || "video/mp4"};base64,${btoa(binary)}`,
+          type: blob.type || "video/mp4",
+          size: blob.size,
+        }
+      }
+
       if (method === "debugger.click") {
         const { tabId, x, y } = args[0] as { tabId: number; x: number; y: number }
         const target = { tabId }

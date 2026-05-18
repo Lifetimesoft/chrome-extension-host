@@ -132,6 +132,7 @@ function buildChromeShim(agentName) {
     debugger: {
       click: (payload) => chromeProxy("debugger", "click", [payload]),
     },
+    fetchDataUrl: (url) => chromeProxy("fetch", "dataUrl", [url], 10 * 60_000),
   }
 }
 
