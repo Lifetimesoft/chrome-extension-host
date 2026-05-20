@@ -7,6 +7,12 @@ interface StatusResponse {
   agents: InstalledAgent[]
 }
 
+interface AgentAliasResponse {
+  success: boolean
+  error?: string
+  agent?: InstalledAgent
+}
+
 const DEV_URL_PREFIX = "lts_dev_bundle_"
 
 function el<T extends HTMLElement>(id: string): T {
@@ -18,7 +24,11 @@ function escHtml(s: string): string {
 }
 
 async function sendMsg<T>(message: object): Promise<T> {
-  return chrome.runtime.sendMessage(message) as Promise<T>
+  const response = await chrome.runtime.sendMessage(message)
+  if (response === undefined) {
+    throw new Error(chrome.runtime.lastError?.message ?? "No response from background service worker")
+  }
+  return response as T
 }
 
 function setNotification(text: string, isError: boolean): void {
@@ -42,11 +52,12 @@ async function run(): Promise<void> {
   const status = await sendMsg<StatusResponse>({ type: "get_status" }).catch(
     () => ({ loggedIn: false, agents: [] } as StatusResponse)
   )
-  const agent = status.agents.find(a => a.name === agentName)
-  if (!agent) {
+  const loadedAgent = status.agents.find(a => a.name === agentName)
+  if (!loadedAgent) {
     setNotification(`Agent "${agentName}" not found`, true)
     return
   }
+  let agent: InstalledAgent = loadedAgent
 
   // Load dev URL
   const stored = await chrome.storage.local.get(DEV_URL_PREFIX + agentName)
@@ -56,17 +67,25 @@ async function run(): Promise<void> {
   el("agent-name").textContent = agent.name
   el("agent-meta").textContent = `v${agent.version} · installed ${new Date(agent.installed_at).toLocaleDateString()}`
 
-  // ── Info rows ──
-  const rows: Array<{ label: string; value: string }> = [
-    { label: "Version",      value: agent.version },
-    { label: "Status",       value: agent.status },
-    { label: "Installed",    value: new Date(agent.installed_at).toLocaleString() },
-    ...(agent.run_id    ? [{ label: "Run ID",    value: agent.run_id }]    : []),
-    ...(agent.instance_id !== undefined ? [{ label: "Instance ID", value: String(agent.instance_id) }] : []),
-  ]
-  el("info-rows").innerHTML = rows.map(r =>
-    `<div class="info-row"><span class="info-label">${escHtml(r.label)}</span><span class="info-value">${escHtml(r.value)}</span></div>`
-  ).join("")
+  function renderInfoRows(a: InstalledAgent): void {
+    const rows: Array<{ label: string; value: string }> = [
+      { label: "Version",      value: a.version },
+      ...(a.alias ? [{ label: "Name", value: a.alias }] : []),
+      { label: "Status",       value: a.status },
+      { label: "Installed",    value: new Date(a.installed_at).toLocaleString() },
+      ...(a.run_id    ? [{ label: "Run ID",    value: a.run_id }]    : []),
+      ...(a.instance_id !== undefined ? [{ label: "Instance ID", value: String(a.instance_id) }] : []),
+    ]
+    el("info-rows").innerHTML = rows.map(r =>
+      `<div class="info-row"><span class="info-label">${escHtml(r.label)}</span><span class="info-value">${escHtml(r.value)}</span></div>`
+    ).join("")
+  }
+
+  const aliasInput = el<HTMLInputElement>("alias-input")
+  const aliasDesc = el<HTMLParagraphElement>("alias-desc")
+  const aliasSaveBtn = el<HTMLButtonElement>("alias-save-btn")
+  aliasInput.value = agent.alias ?? ""
+  renderInfoRows(agent)
 
   // ── Status badge + toggle button ──
   function updateStatusUI(a: InstalledAgent): void {
@@ -77,20 +96,48 @@ async function run(): Promise<void> {
       badge.textContent = "● Running"
       btn.className = "btn-action btn-stop"
       btn.textContent = "⏸ Stop"
+      aliasDesc.textContent = "Saved in Chrome. The running agent keeps its current SaaS name until the next start or restart."
     } else if (a.status === "error") {
       badge.className = "badge badge-error"
       badge.textContent = "✕ Error"
       btn.className = "btn-action btn-start"
       btn.textContent = "▶ Start"
+      aliasDesc.textContent = "Saved in Chrome. It is sent to SaaS on the next start or restart."
     } else {
       badge.className = "badge badge-stopped"
       badge.textContent = "○ Stopped"
       btn.className = "btn-action btn-start"
       btn.textContent = "▶ Start"
+      aliasDesc.textContent = "Saved in Chrome. It is sent to SaaS on the next start or restart."
     }
   }
 
   updateStatusUI(agent)
+
+  aliasSaveBtn.addEventListener("click", async () => {
+    const alias = aliasInput.value.trim()
+    aliasSaveBtn.disabled = true
+    try {
+      const res: AgentAliasResponse = await sendMsg<AgentAliasResponse>({
+        type: "agent_update_alias",
+        name: agentName,
+        alias: alias || null,
+      }).catch(e => ({ success: false, error: e instanceof Error ? e.message : String(e) }))
+
+      if (res.success && res.agent) {
+        agent = res.agent
+        aliasInput.value = agent.alias ?? ""
+        renderInfoRows(agent)
+        updateStatusUI(agent)
+        setNotification(alias ? `Name saved for "${agentName}"` : `Name cleared for "${agentName}"`, false)
+        setTimeout(() => setNotification("", false), 3000)
+      } else {
+        setNotification(`Save failed: ${res.error ?? "unknown"}`, true)
+      }
+    } finally {
+      aliasSaveBtn.disabled = false
+    }
+  })
 
   el<HTMLButtonElement>("toggle-btn").addEventListener("click", async () => {
     const btn = el<HTMLButtonElement>("toggle-btn")
@@ -103,8 +150,13 @@ async function run(): Promise<void> {
       setNotification(`Stopping "${agentName}"...`, false)
       await sendMsg({ type: "agent_stop", name: agentName }).catch(() => {})
     } else {
+      const alias = aliasInput.value.trim()
       setNotification(`Starting "${agentName}"...`, false)
-      const res = await sendMsg<{ success: boolean; error?: string }>({ type: "agent_start", name: agentName })
+      const res = await sendMsg<{ success: boolean; error?: string }>({
+        type: "agent_start",
+        name: agentName,
+        alias: alias || null,
+      })
         .catch(e => ({ success: false, error: e instanceof Error ? e.message : String(e) }))
       if (!res.success) {
         setNotification(`Failed to start: ${res.error ?? "unknown"}`, true)
@@ -116,7 +168,11 @@ async function run(): Promise<void> {
     // Refresh status
     const updated = await sendMsg<StatusResponse>({ type: "get_status" })
     const updatedAgent = updated.agents.find(a => a.name === agentName)
-    if (updatedAgent) updateStatusUI(updatedAgent)
+    if (updatedAgent) {
+      agent = updatedAgent
+      renderInfoRows(agent)
+      updateStatusUI(agent)
+    }
     setNotification("", false)
     btn.disabled = false
   })

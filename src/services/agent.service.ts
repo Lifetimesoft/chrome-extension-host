@@ -97,6 +97,7 @@ export async function installAgent(
     status:       AGENT_STATUS.STOPPED,
     installed_at: Date.now(),
     config,
+    ...(existing?.alias ? { alias: existing.alias } : {}),
     // preserve existing instance_id if upgrading
     ...(existing?.instance_id !== undefined ? { instance_id: existing.instance_id } : {}),
   }
@@ -154,4 +155,24 @@ export async function updateAgentConfig(
 
   await upsertInstalledAgent({ ...agent, config })
   bgLog.info(`Agent "${name}" config updated`)
+}
+
+export async function updateAgentAlias(
+  name: string,
+  alias?: string | null
+): Promise<InstalledAgent> {
+  const agent = await getInstalledAgent(name)
+  if (!agent) throw new Error(`Agent "${name}" is not installed`)
+
+  const trimmedAlias = alias?.trim()
+  const updated: InstalledAgent = { ...agent }
+  if (trimmedAlias) {
+    updated.alias = trimmedAlias
+  } else {
+    delete updated.alias
+  }
+
+  await upsertInstalledAgent(updated)
+  bgLog.info(`Agent "${name}" alias ${trimmedAlias ? "updated" : "cleared"}`)
+  return updated
 }

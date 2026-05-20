@@ -70,7 +70,7 @@ export async function removeInstalledAgent(name: string): Promise<void> {
 export async function updateAgentStatus(
   name: string,
   status: InstalledAgent["status"],
-  extra?: Partial<Pick<InstalledAgent, "instance_id" | "run_id">>
+  extra?: Partial<Pick<InstalledAgent, "alias" | "instance_id" | "run_id">>
 ): Promise<void> {
   const agents = await getInstalledAgents()
   const idx = agents.findIndex(a => a.name === name)

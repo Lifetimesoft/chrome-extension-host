@@ -72,11 +72,12 @@ function renderAgents(agents: InstalledAgent[]): void {
   container.innerHTML = agents.map(agent => {
     const devUrl = _devUrls[agent.name] ?? ""
     const devBadge = devUrl ? `<span class="dev-active-badge">⚡ dev</span>` : ""
+    const alias = agent.alias ? ` <span class="agent-alias">(${escHtml(agent.alias)})</span>` : ""
     return `
     <div class="agent-card" data-name="${escHtml(agent.name)}" style="cursor:pointer;">
       <div class="agent-card-header">
         <div class="agent-info">
-          <div class="agent-name">${escHtml(agent.name)}${devBadge}</div>
+          <div class="agent-name">${escHtml(agent.name)}${alias}${devBadge}</div>
           <div class="agent-meta">v${escHtml(agent.version)} · installed ${new Date(agent.installed_at).toLocaleDateString()}</div>
         </div>
         <div class="agent-actions">

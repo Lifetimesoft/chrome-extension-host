@@ -115,7 +115,8 @@ function getClientInfo() {
 
 async function registerRun(
   agentName: string,
-  agentVersion: string
+  agentVersion: string,
+  alias?: string | null
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta">; instance_id: number }> {
   const res = await apiCall(`${API_URLS.AGENT_BASE}/agents/run`, {
     method: "POST",
@@ -125,6 +126,7 @@ async function registerRun(
       agent_version: agentVersion,
       container_id:  `chrome-${Date.now()}`,
       hostname:      "chrome-extension",
+      alias:         alias ?? null,
       client_info:   getClientInfo(),
     }),
   })
@@ -150,7 +152,8 @@ async function registerRun(
 }
 
 async function restartRun(
-  instanceId: number
+  instanceId: number,
+  alias?: string | null
 ): Promise<{ ctx: Pick<Context, "input" | "config" | "env" | "meta"> }> {
   const res = await apiCall(`${API_URLS.AGENT_BASE}/agents/restart`, {
     method: "POST",
@@ -159,6 +162,7 @@ async function restartRun(
       instance_id:  instanceId,
       container_id: `chrome-${Date.now()}`,
       hostname:     "chrome-extension",
+      alias:        alias ?? null,
       client_info:  getClientInfo(),
     }),
   })
@@ -186,12 +190,14 @@ async function restartRun(
 
 // ─── Start agent ──────────────────────────────────────────────────────────────
 
-export async function startAgent(agentName: string): Promise<void> {
+export async function startAgent(agentName: string, alias?: string | null): Promise<void> {
   // Stop any existing run first
   await stopAgent(agentName)
 
   const agent = await getInstalledAgent(agentName)
   if (!agent) throw new AgentError(`Agent "${agentName}" is not installed`)
+
+  const effectiveAlias = alias !== undefined ? (alias?.trim() || undefined) : agent.alias
 
   bgLog.info(`Starting agent "${agentName}" v${agent.version} via sandbox...`)
 
@@ -202,13 +208,13 @@ export async function startAgent(agentName: string): Promise<void> {
     if (instanceId !== undefined) {
       bgLog.info(`Restarting existing instance ${instanceId} for "${agentName}"...`)
       try {
-        const { ctx } = await retry(() => restartRun(instanceId!), 2, 1000)
+        const { ctx } = await retry(() => restartRun(instanceId!, effectiveAlias), 2, 1000)
         agentCtx = ctx
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         if (msg === "INSTANCE_EXPIRED") {
           bgLog.info(`Instance expired for "${agentName}" — registering new run...`)
-          const { ctx, instance_id } = await retry(() => registerRun(agentName, agent.version), 3, 1000)
+          const { ctx, instance_id } = await retry(() => registerRun(agentName, agent.version, effectiveAlias), 3, 1000)
           agentCtx = ctx
           instanceId = instance_id
         } else {
@@ -217,7 +223,7 @@ export async function startAgent(agentName: string): Promise<void> {
       }
     } else {
       bgLog.info(`Registering new run for "${agentName}"...`)
-      const { ctx, instance_id } = await retry(() => registerRun(agentName, agent.version), 3, 1000)
+      const { ctx, instance_id } = await retry(() => registerRun(agentName, agent.version, effectiveAlias), 3, 1000)
       agentCtx = ctx
       instanceId = instance_id
     }
@@ -229,13 +235,19 @@ export async function startAgent(agentName: string): Promise<void> {
   }
 
   // Update stored metadata — persist ws_url so keepalive alarm can reconnect after SW restart
-  await upsertInstalledAgent({
+  const updatedAgent = {
     ...agent,
     instance_id: instanceId,
     run_id:      agentCtx.meta.run_id,
     ws_url:      agentCtx.meta.runtime?.ws_url,
     status:      AGENT_STATUS.RUNNING,
-  })
+  }
+  if (effectiveAlias) {
+    updatedAgent.alias = effectiveAlias
+  } else {
+    delete updatedAgent.alias
+  }
+  await upsertInstalledAgent(updatedAgent)
 
   // Persist ctx to chrome.storage — equivalent to AGENT_CTX env var in Node.js runtime.
   // Survives SW termination so trigger/config_updated can run agent without full restart.

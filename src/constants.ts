@@ -53,6 +53,7 @@ export const MESSAGE_TYPES = {
   AGENT_STOP: "agent_stop",
   AGENT_INSTALL: "agent_install",
   AGENT_UNINSTALL: "agent_uninstall",
+  AGENT_UPDATE_ALIAS: "agent_update_alias",
   GET_STATUS: "get_status",
   
   // Runtime messages

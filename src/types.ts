@@ -7,6 +7,7 @@ import { AGENT_STATUS } from "./constants"
 // Agent types
 export interface InstalledAgent {
   name: string
+  alias?: string
   version: string
   status: "running" | "stopped" | "error"
   instance_id?: number

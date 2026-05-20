@@ -10,7 +10,7 @@
 
 import { bgLog } from "../utils/logger"
 import { login, logout, cancelLogin, isLoggedIn, resumeLoginIfPending } from "../services/auth.service"
-import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig } from "../services/agent.service"
+import { listInstalledAgents, installAgent, uninstallAgent, updateAgentConfig, updateAgentAlias } from "../services/agent.service"
 import { startAgent, stopAgent, isAgentRunning, triggerAgent, applyConfigUpdate, reconnectHeartbeats, restoreAgent, forceStopIfRunning, stopAllAgents, getRunId, registerPendingJob } from "../services/runtime.service"
 import { handleOffscreenMessage, ensureOffscreenAlive } from "../services/sandbox.service"
 import { handleAlarm } from "../services/scheduler.service"
@@ -118,8 +118,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // ── Agent: start ──
   if (msg.type === MESSAGE_TYPES.AGENT_START) {
-    const { name } = msg as BackgroundMessage & { name: string }
-    startAgent(name)
+    const { name, alias } = msg as BackgroundMessage & { name: string; alias?: string | null }
+    startAgent(name, alias)
       .then(() => sendResponse({ success: true }))
       .catch((e: unknown) => sendResponse({
         success: false,
@@ -148,6 +148,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       config?: Record<string, unknown>
     }
     installAgent(name, version, config)
+      .then(agent => sendResponse({ success: true, agent }))
+      .catch((e: unknown) => sendResponse({
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      }))
+    return true
+  }
+
+  // ── Agent: update local alias ──
+  if (msg.type === MESSAGE_TYPES.AGENT_UPDATE_ALIAS) {
+    const { name, alias } = msg as BackgroundMessage & { name: string; alias?: string | null }
+    updateAgentAlias(name, alias)
       .then(agent => sendResponse({ success: true, agent }))
       .catch((e: unknown) => sendResponse({
         success: false,
